@@ -32,7 +32,9 @@ services:
       SETTLE_SECONDS: "300"
       KAVITA_URL: http://kavita:5000
       KAVITA_API_KEY_FILE: /run/secrets/kavita_api_key
-      KAVITA_LIBRARY_ID: "1"
+      KAVITA_COMICS_ROOT: /comics # Must match the path INSIDE Kavita
+      WEBHOOK_TOKEN_FILE: /run/secrets/webhook_token
+      WEBHOOK_PORT: "8080"
       # Optional comma-separated Kapowarr volume IDs, not Comic Vine IDs.
       VOLUME_IDS: ""
     volumes:
@@ -40,6 +42,7 @@ services:
       - /path/to/config/kapowarr-tagger/state:/state
       - /path/to/config/kapowarr-tagger/secrets/kapowarr_api_key:/run/secrets/kapowarr_api_key:ro
       - /path/to/config/kapowarr-tagger/secrets/kavita_api_key:/run/secrets/kavita_api_key:ro
+      - /path/to/config/kapowarr-tagger/secrets/webhook_token:/run/secrets/webhook_token:ro
     stop_grace_period: 15m
     read_only: true
     cap_drop: [ALL]

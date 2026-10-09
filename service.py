@@ -1,5 +1,7 @@
 """Headless polling service. Preview by default; explicit write mode required."""
 import fcntl
+import hmac
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
 import logging
@@ -16,6 +18,7 @@ from writer import apply_one, sha256
 
 LOG = logging.getLogger('tagger')
 STOP = threading.Event()
+WAKE = threading.Event()
 
 
 def atomic_json(path, data):
@@ -36,21 +39,54 @@ def identity(value):
     return unicodedata.normalize('NFC', str(value))
 
 
-def request_scan():
+def request_scan(folder):
     url = os.environ['KAVITA_URL'].rstrip('/')
     key = Path(os.environ['KAVITA_API_KEY_FILE']).read_text().strip()
-    library = int(os.environ['KAVITA_LIBRARY_ID'])
-    if not key or library < 1:
-        raise ValueError('Missing Kavita credentials or library ID')
+    root = Path(os.environ.get('COMICS_ROOT', '/comics')).resolve()
+    relative = Path(folder).resolve().relative_to(root)
+    if not relative.parts:
+        raise ValueError('Refusing library-root folder request')
+    target = Path(os.environ['KAVITA_COMICS_ROOT']) / relative
+    if not key or not target.is_absolute():
+        raise ValueError('Missing key or absolute Kavita comics root')
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None
     request = urllib.request.Request(
-        url + '/api/Library/scan?' + urllib.parse.urlencode({'libraryId': library, 'force': 'false'}),
-        data=b'', method='POST', headers={'x-api-key': key})
+        url + '/api/Library/scan-folder',
+        data=json.dumps({'apiKey': key, 'folderPath': str(target),
+                         'abortOnNoSeriesMatch': False}).encode(),
+        method='POST', headers={'Content-Type': 'application/json'})
     with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response:
         if response.status not in (200, 202, 204):
             raise ValueError('Scan request not accepted')
+
+
+def webhook_server(token, port):
+    if len(token) < 24:
+        raise ValueError('Webhook token must contain at least 24 characters')
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass  # URL contains a secret; never log it.
+        def do_POST(self):
+            self.connection.settimeout(5)
+            if not hmac.compare_digest(self.path, '/hooks/' + token):
+                self.send_error(403); return
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length <= 16384:
+                    raise ValueError()
+                payload = json.loads(self.rfile.read(length))
+                if not isinstance(payload, dict):
+                    raise ValueError()
+            except (ValueError, TimeoutError):
+                self.send_error(400); return
+            if payload.get('event') == 'download_completed':
+                WAKE.set()
+            self.send_response(202); self.end_headers()
+    server = ThreadingHTTPServer(('0.0.0.0', port), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 class Service:
@@ -64,7 +100,13 @@ class Service:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.mode, self.settle = mode, settle
         self.path = self.directory / 'state.json'
-        self.state = json.loads(self.path.read_text()) if self.path.exists() else {'files': {}, 'pending_scan': False}
+        self.state = json.loads(self.path.read_text()) if self.path.exists() else {'files': {}, 'pending_folders': []}
+
+        self.state.setdefault('pending_folders', [])
+        if self.state.pop('pending_scan', False):
+            # Upgrade old outbox without falling back to a full-library request.
+            self.state['pending_folders'] = sorted(set(self.state['pending_folders']) |
+                {str(Path(k).parent) for k in self.state['files']})
 
     def save(self):
         atomic_json(self.path, self.state)
@@ -120,7 +162,9 @@ class Service:
                 row.update(status='proposed' if changes else 'correct', changes=changes)
                 if self.mode == 'write':
                     # Persist notification intent BEFORE writing; survives interruption.
-                    self.state['pending_scan'] = True
+                    folder = str(path.parent)
+                    if folder not in self.state['pending_folders']:
+                        self.state['pending_folders'].append(folder)
                     self.save()
                     if changes:
                         row['source_sha256'] = sha256(path)
@@ -146,20 +190,22 @@ class Service:
                 if identity(path) not in mappings:
                     report.append({'file': str(path), 'status': 'unmapped'})
         self.save()
-        # A settling file could be picked up too early by a library-wide scan.
-        # Defer until the batch is quiet, retrying the durable outbox each cycle.
         scan = 'not_requested'
-        if (self.mode == 'write' and self.state['pending_scan']
-                and not STOP.is_set() and not any(r['status'] == 'settling' for r in report)):
-            try:
-                notify()
-                self.state['pending_scan'] = False
-                self.state['last_scan_requested'] = time.time()
-                self.save()
-                scan = 'accepted'
-            except Exception as exc:
-                scan = 'pending_retry'
-                LOG.warning('Kavita scan request failed (%s); retained for retry', type(exc).__name__)
+        blocked = {str(Path(r['file']).parent) for r in report
+                   if r['status'] in ('settling', 'review')}
+        if self.mode == 'write' and not STOP.is_set():
+            for folder in list(self.state['pending_folders']):
+                if folder in blocked:
+                    continue
+                try:
+                    notify(folder)
+                    self.state['pending_folders'].remove(folder)
+                    self.state['last_scan_requested'] = time.time()
+                    self.save()
+                    scan = 'accepted'
+                except Exception as exc:
+                    scan = 'pending_retry'
+                    LOG.warning('Kavita folder request failed (%s); retained for retry', type(exc).__name__)
         summary = {status: sum(r['status'] == status for r in report) for status in {r['status'] for r in report}}
         atomic_json(self.directory / 'report.json', {'time': time.time(), 'mode': self.mode,
                     'counts': summary, 'scan_request': scan, 'files': report})
@@ -171,12 +217,15 @@ class Service:
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
     for sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(sig, lambda *_: STOP.set())
+        signal.signal(sig, lambda *_: (STOP.set(), WAKE.set()))
     service = Service(os.environ.get('COMICS_ROOT', '/comics'), os.environ.get('STATE_DIR', '/state'),
                       os.environ.get('MODE', 'preview'), int(os.environ.get('SETTLE_SECONDS', '300')))
     with (service.directory / 'service.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        token_file = os.environ.get('WEBHOOK_TOKEN_FILE')
+        server = webhook_server(Path(token_file).read_text().strip(), int(os.environ.get('WEBHOOK_PORT', '8080'))) if token_file else None
         while not STOP.is_set():
+            WAKE.clear()
             try:
                 # Fetch complete snapshot before modifying anything; fail closed on API errors.
                 volumes = [api('volumes/' + str(v['id'])) for v in api('volumes')]
@@ -185,7 +234,9 @@ def main():
                 LOG.error('Cycle failed (%s); retry next poll', type(exc).__name__)
             if os.environ.get('RUN_ONCE') == 'true':
                 break
-            STOP.wait(max(60, int(os.environ.get('POLL_SECONDS', '300'))))
+            WAKE.wait(max(60, int(os.environ.get('POLL_SECONDS', '300'))))
+        if server:
+            server.shutdown(); server.server_close()
 
 
 if __name__ == '__main__':

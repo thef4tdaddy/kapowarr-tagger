@@ -36,7 +36,7 @@ Kavita scan notification has not yet been exercised.
 
 ## Container setup
 
-Use `compose.stack.yaml` for the owner's complete existing Kapowarr stack plus the
+Use `compose.stack.yaml` as a template for a Kapowarr stack plus the
 companion, or merge `compose.addition.yaml` into an existing stack. The companion
 must be on the same Docker network as Kapowarr. It uses UID 1029 and GID 100.
 
@@ -67,7 +67,7 @@ disable Kavita's independent folder watcher and scheduled scans, and set `MODE` 
 `write` in Compose. Redeploy the companion. Do not disable Kavita scanning until
 its credentials and the companion's scan request have been verified.
 
-Files still settling delay the library-wide scan. Files held for review remain in
+Files still settling delay their folder scan. Files held for review remain in
 the library and can still be seen by Kavita when it scans; this service does not
 quarantine them. Continuous incoming files may postpone a scan until the library
 is quiet. Kapowarr and other tools must not replace an archive while it is being
@@ -82,7 +82,7 @@ tagged; the writer detects changes but a shared filesystem offers no universal l
 | KAPOWARR_API_KEY_FILE | `/run/secrets/kapowarr_api_key` |
 | KAVITA_URL | `http://kavita:5000` |
 | KAVITA_API_KEY_FILE | `/run/secrets/kavita_api_key` |
-| KAVITA_LIBRARY_ID | `1` |
+| KAVITA_COMICS_ROOT | path inside Kavita, e.g. `/comics` |
 | COMICS_ROOT | `/comics`; must match paths returned by Kapowarr |
 | STATE_DIR | `/state`; must be outside the comics root |
 | POLL_SECONDS | `300`, minimum 60 |
@@ -112,3 +112,28 @@ python3 -m unittest discover -v
 `companion.py` remains a standalone read-only planner. `writer.py` applies an explicit
 reviewed plan with source hashes; `apply_library.py` resumes a local bulk plan.
 Neither CLI is automatically invoked alongside the container service.
+
+## Kapowarr webhook and folder scans
+
+The companion now requests `/api/Library/scan-folder` for each changed folder,
+with a durable, deduplicated retry queue. It no longer calls the library scan
+endpoint. Kavita may internally broaden a folder request to a library scan,
+especially when discovering a new series; HTTP acceptance is not scan completion.
+
+Set `KAVITA_COMICS_ROOT` to the comic library mount **inside Kavita**. The companion
+translates paths relative to `COMICS_ROOT`; these roots need not be identical.
+A wrong mapping can result in Kavita ignoring the request.
+
+Create a random URL-safe token (at least 24 characters), store it in the mounted
+`secrets/webhook_token` file, then configure a generic webhook in Kapowarr:
+`http://kapowarr-tagger:8080/hooks/YOUR_TOKEN`, subscribed to `download_completed`.
+Keep the token private. No host port needs publishing when both containers share
+the Compose network. The listener rejects missing/incorrect tokens and oversized
+requests; it does not log the token-bearing URL.
+
+The fork's payload has no reliable file ID, so webhooks wake an incremental
+comparison against Kapowarr mappings, not a direct single-file operation. Existing
+unchanged files are skipped. Stable-file checks still apply, and five-minute
+polling catches missed notifications/manual imports. A folder held for review or
+still settling is not submitted until those conditions clear. The listener is
+optional when WEBHOOK_TOKEN_FILE is unset.

@@ -18,7 +18,7 @@ class ServiceTests(unittest.TestCase):
         seen = []
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
-                seen.append((self.path, self.headers.get('x-api-key')))
+                seen.append((self.path, json.loads(self.rfile.read(int(self.headers['Content-Length'])))))
                 self.send_response(200)
                 self.end_headers()
             def log_message(self, *_):
@@ -31,9 +31,9 @@ class ServiceTests(unittest.TestCase):
                 key = Path(d) / 'key'
                 key.write_text('test-only-key')
                 with patch.dict(os.environ, {'KAVITA_URL': f'http://127.0.0.1:{server.server_port}',
-                                             'KAVITA_LIBRARY_ID': '1', 'KAVITA_API_KEY_FILE': str(key)}):
-                    request_scan()
-            self.assertEqual(seen, [('/api/Library/scan?libraryId=1&force=false', 'test-only-key')])
+                                             'COMICS_ROOT': d, 'KAVITA_COMICS_ROOT': '/library', 'KAVITA_API_KEY_FILE': str(key)}):
+                    request_scan(Path(d) / 'Test')
+            self.assertEqual(seen, [('/api/Library/scan-folder', {'apiKey': 'test-only-key', 'folderPath': '/library/Test', 'abortOnNoSeriesMatch': False})])
         finally:
             server.shutdown(); server.server_close(); thread.join()
 
@@ -55,7 +55,7 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(svc.cycle(volumes, notify)[0]['status'], 'settling')
             notify.assert_not_called()
             self.assertEqual(svc.cycle(volumes, notify)[0]['status'], 'written')
-            self.assertTrue(svc.state['pending_scan'])
+            self.assertTrue(svc.state['pending_folders'])
             self.assertEqual(read_tags(p)['Volume'], '2026')
             before = p.read_bytes()
             # Restart must preserve notification retry without rewriting the book.
@@ -63,7 +63,7 @@ class ServiceTests(unittest.TestCase):
             success = Mock()
             self.assertEqual(svc.cycle(volumes, success)[0]['status'], 'unchanged')
             success.assert_called_once()
-            self.assertFalse(svc.state['pending_scan'])
+            self.assertFalse(svc.state['pending_folders'])
             self.assertEqual(p.read_bytes(), before)
             self.assertFalse(list((Path(d) / 'state').rglob('*.cbz')))
 
@@ -92,3 +92,28 @@ class ServiceTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class WebhookTests(unittest.TestCase):
+    def test_authenticated_event_only(self):
+        import urllib.request
+        import urllib.error
+        from service import webhook_server, WAKE
+        token = 'a' * 32
+        server = webhook_server(token, 0)
+        try:
+            WAKE.clear()
+            def post(path, event):
+                req = urllib.request.Request(f'http://127.0.0.1:{server.server_port}/hooks/{path}',
+                    data=json.dumps({'event': event}).encode(), method='POST')
+                return urllib.request.urlopen(req)
+            with self.assertRaises(urllib.error.HTTPError):
+                post('wrong', 'download_completed')
+            self.assertFalse(WAKE.is_set())
+            with post(token, 'import_failed') as response:
+                self.assertEqual(response.status, 202)
+            self.assertFalse(WAKE.is_set())
+            with post(token, 'download_completed') as response:
+                self.assertEqual(response.status, 202)
+            self.assertTrue(WAKE.is_set())
+        finally:
+            server.shutdown(); server.server_close(); WAKE.clear()
