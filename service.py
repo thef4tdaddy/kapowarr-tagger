@@ -1,0 +1,192 @@
+"""Headless polling service. Preview by default; explicit write mode required."""
+import fcntl
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
+import signal
+import threading
+import time
+import unicodedata
+import urllib.parse
+import urllib.request
+from companion import api, desired_tags, read_tags
+from writer import apply_one, sha256
+
+LOG = logging.getLogger('tagger')
+STOP = threading.Event()
+
+
+def atomic_json(path, data):
+    temp = path.with_suffix('.tmp')
+    with temp.open('w') as f:
+        json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temp, path)
+
+
+def fingerprint(path):
+    s = path.stat()
+    return [s.st_size, s.st_mtime_ns]
+
+
+def identity(value):
+    return unicodedata.normalize('NFC', str(value))
+
+
+def request_scan():
+    url = os.environ['KAVITA_URL'].rstrip('/')
+    key = Path(os.environ['KAVITA_API_KEY_FILE']).read_text().strip()
+    library = int(os.environ['KAVITA_LIBRARY_ID'])
+    if not key or library < 1:
+        raise ValueError('Missing Kavita credentials or library ID')
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    request = urllib.request.Request(
+        url + '/api/Library/scan?' + urllib.parse.urlencode({'libraryId': library, 'force': 'false'}),
+        data=b'', method='POST', headers={'x-api-key': key})
+    with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response:
+        if response.status not in (200, 202, 204):
+            raise ValueError('Scan request not accepted')
+
+
+class Service:
+    def __init__(self, root, state_dir, mode='preview', settle=300):
+        if mode not in ('preview', 'write'):
+            raise ValueError('MODE must be preview or write')
+        self.root = Path(root).resolve()
+        self.directory = Path(state_dir).resolve()
+        if self.directory.is_relative_to(self.root):
+            raise ValueError('State directory must be outside the comics library')
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.mode, self.settle = mode, settle
+        self.path = self.directory / 'state.json'
+        self.state = json.loads(self.path.read_text()) if self.path.exists() else {'files': {}, 'pending_scan': False}
+
+    def save(self):
+        atomic_json(self.path, self.state)
+
+    def cycle(self, volumes, notify=request_scan):
+        mappings = {}
+        for volume in volumes:
+            for issue in volume.get('issues', []):
+                for file in issue.get('files', []):
+                    mappings.setdefault(identity(file['filepath']), []).append((file['filepath'], volume, issue))
+        report = []
+        changed = 0
+        selected = set(filter(None, os.environ.get('VOLUME_IDS', '').split(',')))
+        for key, matches in sorted(mappings.items()):
+            if STOP.is_set():
+                break
+            if selected and not any(str(v['id']) in selected for _, v, _ in matches):
+                continue
+            path = Path(matches[0][0])
+            row = {'file': str(path)}
+            try:
+                if len(matches) != 1:
+                    raise ValueError('Multiple issue mappings; review required')
+                if path.is_symlink() or not path.resolve().is_relative_to(self.root):
+                    raise ValueError('Path outside comics root or symlink')
+                if path.suffix.lower() != '.cbz':
+                    raise ValueError('Unsupported format; CBZ required')
+                _, volume, issue = matches[0]
+                desired = desired_tags(volume, issue)
+                signature = hashlib.sha256(json.dumps(desired, sort_keys=True).encode()).hexdigest()
+                current = fingerprint(path)
+                old_state = self.state['files'].get(key, {})
+                if old_state.get('observed') != current:
+                    self.state['files'][key] = {'observed': current, 'first_seen': time.time()}
+                    row['status'] = 'settling'
+                    report.append(row)
+                    continue
+                if (time.time() - old_state['first_seen'] < self.settle
+                        or time.time() - path.stat().st_mtime < self.settle):
+                    row['status'] = 'settling'
+                    report.append(row)
+                    continue
+                if old_state.get('done') == current and old_state.get('signature') == signature:
+                    row['status'] = 'unchanged'
+                    report.append(row)
+                    continue
+                tags = read_tags(path)
+                if tags.get('LocalizedSeries') or tags.get('SeriesSort'):
+                    raise ValueError('Grouping override present; review required')
+                changes = {k: {'before': tags.get(k), 'after': v} for k, v in desired.items() if tags.get(k) != v}
+                if fingerprint(path) != current:
+                    raise ValueError('File changed while being inspected')
+                row.update(status='proposed' if changes else 'correct', changes=changes)
+                if self.mode == 'write':
+                    # Persist notification intent BEFORE writing; survives interruption.
+                    self.state['pending_scan'] = True
+                    self.save()
+                    if changes:
+                        row['source_sha256'] = sha256(path)
+                        if fingerprint(path) != current:
+                            raise ValueError('Source changed while hashing')
+                        result = apply_one(row, self.root, self.directory / 'metadata-backups')
+                        with (self.directory / 'journal.jsonl').open('a') as journal:
+                            journal.write(json.dumps(dict(result, time=time.time())) + '\n')
+                            journal.flush()
+                            os.fsync(journal.fileno())
+                        row['status'] = 'written'
+                        changed += 1
+                    after = fingerprint(path)
+                    self.state['files'][key] = {'observed': after, 'first_seen': time.time(),
+                                               'done': after, 'signature': signature}
+                    self.save()
+            except Exception as exc:
+                row.update(status='review', reason=str(exc))
+            report.append(row)
+        # Account for files not present in Kapowarr's issue/file mappings.
+        for path in self.root.rglob('*'):
+            if path.suffix.lower() in ('.cbz', '.cbr', '.cb7', '.cbt', '.pdf', '.epub') and path.is_file():
+                if identity(path) not in mappings:
+                    report.append({'file': str(path), 'status': 'unmapped'})
+        self.save()
+        # A settling file could be picked up too early by a library-wide scan.
+        # Defer until the batch is quiet, retrying the durable outbox each cycle.
+        scan = 'not_requested'
+        if (self.mode == 'write' and self.state['pending_scan']
+                and not STOP.is_set() and not any(r['status'] == 'settling' for r in report)):
+            try:
+                notify()
+                self.state['pending_scan'] = False
+                self.state['last_scan_requested'] = time.time()
+                self.save()
+                scan = 'accepted'
+            except Exception as exc:
+                scan = 'pending_retry'
+                LOG.warning('Kavita scan request failed (%s); retained for retry', type(exc).__name__)
+        summary = {status: sum(r['status'] == status for r in report) for status in {r['status'] for r in report}}
+        atomic_json(self.directory / 'report.json', {'time': time.time(), 'mode': self.mode,
+                    'counts': summary, 'scan_request': scan, 'files': report})
+        atomic_json(self.directory / 'health.json', {'last_success': time.time(), 'mode': self.mode})
+        LOG.info('Cycle complete: %s; scan=%s', summary, scan)
+        return report
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: STOP.set())
+    service = Service(os.environ.get('COMICS_ROOT', '/comics'), os.environ.get('STATE_DIR', '/state'),
+                      os.environ.get('MODE', 'preview'), int(os.environ.get('SETTLE_SECONDS', '300')))
+    with (service.directory / 'service.lock').open('w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        while not STOP.is_set():
+            try:
+                # Fetch complete snapshot before modifying anything; fail closed on API errors.
+                volumes = [api('volumes/' + str(v['id'])) for v in api('volumes')]
+                service.cycle(volumes)
+            except Exception as exc:
+                LOG.error('Cycle failed (%s); retry next poll', type(exc).__name__)
+            if os.environ.get('RUN_ONCE') == 'true':
+                break
+            STOP.wait(max(60, int(os.environ.get('POLL_SECONDS', '300'))))
+
+
+if __name__ == '__main__':
+    main()

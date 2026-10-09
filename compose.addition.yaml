@@ -7,18 +7,25 @@ services:
     cpu_shares: 50
     mem_limit: 256m
     environment:
-      TZ: America/Chicago
+      TZ: Etc/UTC
       KAPOWARR_URL: http://kapowarr:5656
       KAPOWARR_API_KEY_FILE: /run/secrets/kapowarr_api_key
       COMICS_ROOT: /comics
       STATE_DIR: /state
-      POLL_SECONDS: "900"
+      MODE: preview
+      POLL_SECONDS: "300"
+      SETTLE_SECONDS: "300"
+      KAVITA_URL: http://kavita:5000
+      KAVITA_API_KEY_FILE: /run/secrets/kavita_api_key
+      KAVITA_LIBRARY_ID: "1"
       # Optional comma-separated Kapowarr volume IDs, not Comic Vine IDs.
       VOLUME_IDS: ""
     volumes:
-      - /volume1/Multimedia/Comics:/comics:ro
-      - /volume1/docker/kapowarr-tagger/state:/state
-      - /volume1/docker/kapowarr-tagger/secrets/kapowarr_api_key:/run/secrets/kapowarr_api_key:ro
+      - /path/to/comics:/comics
+      - /path/to/config/kapowarr-tagger/state:/state
+      - /path/to/config/kapowarr-tagger/secrets/kapowarr_api_key:/run/secrets/kapowarr_api_key:ro
+      - /path/to/config/kapowarr-tagger/secrets/kavita_api_key:/run/secrets/kavita_api_key:ro
+    stop_grace_period: 15m
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

@@ -1,0 +1,94 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+import zipfile
+from unittest.mock import Mock
+from service import Service
+from companion import read_tags
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import patch
+from service import request_scan
+
+
+class ServiceTests(unittest.TestCase):
+    def test_scan_http_contract(self):
+        seen = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen.append((self.path, self.headers.get('x-api-key')))
+                self.send_response(200)
+                self.end_headers()
+            def log_message(self, *_):
+                pass
+        server = HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                key = Path(d) / 'key'
+                key.write_text('test-only-key')
+                with patch.dict(os.environ, {'KAVITA_URL': f'http://127.0.0.1:{server.server_port}',
+                                             'KAVITA_LIBRARY_ID': '1', 'KAVITA_API_KEY_FILE': str(key)}):
+                    request_scan()
+            self.assertEqual(seen, [('/api/Library/scan?libraryId=1&force=false', 'test-only-key')])
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
+    def setup_library(self, d):
+        root = Path(d) / 'comics'
+        root.mkdir()
+        p = root / 'one.cbz'
+        with zipfile.ZipFile(p, 'w') as z:
+            z.writestr('page.jpg', b'unchanged page')
+        volumes = [{'id': 1, 'title': 'Test', 'year': 2026, 'comicvine_id': 123,
+                    'issues': [{'issue_number': '1', 'files': [{'filepath': str(p)}]}]}]
+        return root, p, volumes
+
+    def test_write_retry_and_no_rewrite(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, p, volumes = self.setup_library(d)
+            svc = Service(root, Path(d) / 'state', 'write', settle=0)
+            notify = Mock(side_effect=ConnectionError())
+            self.assertEqual(svc.cycle(volumes, notify)[0]['status'], 'settling')
+            notify.assert_not_called()
+            self.assertEqual(svc.cycle(volumes, notify)[0]['status'], 'written')
+            self.assertTrue(svc.state['pending_scan'])
+            self.assertEqual(read_tags(p)['Volume'], '2026')
+            before = p.read_bytes()
+            # Restart must preserve notification retry without rewriting the book.
+            svc = Service(root, Path(d) / 'state', 'write', settle=0)
+            success = Mock()
+            self.assertEqual(svc.cycle(volumes, success)[0]['status'], 'unchanged')
+            success.assert_called_once()
+            self.assertFalse(svc.state['pending_scan'])
+            self.assertEqual(p.read_bytes(), before)
+            self.assertFalse(list((Path(d) / 'state').rglob('*.cbz')))
+
+    def test_preview_and_unmapped(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, p, volumes = self.setup_library(d)
+            (root / 'unknown.pdf').write_bytes(b'pdf')
+            svc = Service(root, Path(d) / 'state', 'preview', settle=0)
+            notify = Mock()
+            before = p.read_bytes()
+            svc.cycle(volumes, notify)
+            report = svc.cycle(volumes, notify)
+            self.assertEqual({r['status'] for r in report}, {'proposed', 'unmapped'})
+            notify.assert_not_called()
+            self.assertEqual(p.read_bytes(), before)
+
+    def test_metadata_change_reprocessed(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, p, volumes = self.setup_library(d)
+            svc = Service(root, Path(d) / 'state', 'write', settle=0)
+            svc.cycle(volumes, Mock()); svc.cycle(volumes, Mock())
+            volumes[0]['year'] = 2025
+            self.assertEqual(svc.cycle(volumes, Mock())[0]['status'], 'written')
+            self.assertEqual(read_tags(p)['Volume'], '2025')
+
+
+if __name__ == '__main__':
+    unittest.main()

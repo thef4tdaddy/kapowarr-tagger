@@ -15,7 +15,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m unittest -v test_companion.py
+      - run: python -m unittest discover -v
+      - name: Build and smoke-test container
+        run: |
+          docker build -t kapowarr-tagger-smoke .
+          docker run --rm --entrypoint python kapowarr-tagger-smoke -c "import os,service,writer; assert os.getuid() == 1029"
   publish:
     if: github.event_name != 'pull_request'
     needs: test

@@ -1,60 +1,114 @@
-# Kapowarr tagging companion — preview stage
+# Kapowarr Tagger
 
-## GitHub Container Registry
+Headless companion for silasfelinus/Kapowarr and Kavita. Kapowarr identifies and
+organizes comics; this service makes their embedded grouping metadata consistent
+and requests a Kavita scan after a quiet batch. No web UI or exposed ports.
 
-GitHub Actions tests and publishes amd64 and arm64 images to GHCR using its
-built-in GITHUB_TOKEN with packages:write permission. No Docker Hub credentials
-are required. Main publishes `ghcr.io/thef4tdaddy/kapowarr-tagger:preview` plus a
-commit tag; version tags are also published. There is no `latest` tag while this
-is preview-only. After initial publication, ensure the GitHub package visibility
-is public for anonymous NAS pulls. Public repository visibility does not itself
-make a new package public. Never publish the `state` or `secrets` folders.
+**Default mode is preview.** Write mode replaces CBZ archives after verification.
+This is early software: the Deadpool test grouped eight issues correctly in the
+owner's Kavita installation. Full-library validation and NAS container deployment
+are still pending. The service integration is covered by automated tests; live
+Kavita scan notification has not yet been exercised.
 
-This version is deliberately read-only. It polls silasfelinus/Kapowarr every
-15 minutes and writes `/state/preview.json`. It does **not** tag comics, trigger
-Kavita scans, or promise that the proposed grouping has been verified in Kavita.
-No web UI or exposed port. No third-party Python dependencies.
+## What it does
 
-## Installation in your existing stack
+- Polls Kapowarr's `/api/volumes` and individual volume endpoints every five minutes.
+- Uses confirmed issue-to-file mappings; it does not infer identity from filenames.
+- Requires stable file size/mtime across observations and a five-minute settling period.
+- Stores file fingerprints and desired identity signatures in persistent state.
+- Writes only `Series`, `Volume`, and `Number`. Existing summaries, credits, page
+  metadata, and other fields are retained. Missing descriptive metadata is not scraped.
+- Uses `Series = title [CV-volume-ID]`, `Volume = run starting year`, and Kapowarr's
+  issue number. The visible CV suffix intentionally separates same-name/same-year
+  series and trades. CBL names may need remapping to this identity.
+- Streams one temporary replacement archive at a time, verifies the SHA-256 of
+  every non-metadata member, and detects source changes before replacement.
+- Keeps only original ComicInfo bytes and archive comments in small JSON rollback
+  records. **It does not retain duplicate comic archives.** These records support
+  metadata rollback, not byte-for-byte restoration of ZIP compression or recovery
+  from disk failure. A temporary archive still needs space roughly equal to one book.
+- Writes a durable scan-request flag before changes. Calls
+  `POST /api/Library/scan?libraryId=1&force=false` using `x-api-key` after the batch.
+  Failed requests retry next cycle without rewriting completed books. HTTP acceptance
+  means queued, not that Kavita finished scanning or grouped everything correctly.
+- Reports unmapped files, unsupported formats, invalid archives, multi-issue mappings,
+  missing identity, and grouping overrides without changing those files.
 
-1. Create `/volume1/docker/kapowarr-tagger` on the NAS. The image contains the code.
-2. Create `state` and `secrets` subdirectories there. UID 1029 / GID 100 must
-   be able to write `state` and read the secret file.
-3. Put your existing Kapowarr API key into `secrets/kapowarr_api_key` on the NAS.
-   Do not paste it into chat or commit it. Restrict its file permissions.
-4. Merge the `kapowarr-tagger` service from `compose.addition.yaml` into the
-   existing stack's `services` section. Keep the existing Kapowarr service.
-5. Pull and start the companion using your stack manager or
-   `docker compose up -d kapowarr-tagger` from the stack directory.
-6. Inspect `state/preview.json` and container logs. A failed API request is retried
-   on the next interval. The comics mount remains read-only.
+## Container setup
 
-The service uses the internal Docker hostname `kapowarr:5656`, so both services
-must belong to the same Compose network. If Kapowarr has a URL base configured,
-append it to KAPOWARR_URL. No database mount is needed.
+Use `compose.stack.yaml` for the owner's complete existing Kapowarr stack plus the
+companion, or merge `compose.addition.yaml` into an existing stack. The companion
+must be on the same Docker network as Kapowarr. It uses UID 1029 and GID 100.
 
-## Identity proposal requiring review
+Create these directories on the NAS, writable/readable as appropriate by UID 1029:
 
-Use `Series = title [CV-volume-ID]`, `Volume = run starting year`, and
-`Number = Kapowarr issue number`. The visible CV suffix is intentional: year alone
-cannot separate same-name/same-year publishing runs or some collected editions.
-This changes the displayed series identity and may require adapting the CBL.
-It is a proposal, not a verified Kavita convention for this installation.
+```text
+/path/to/config/kapowarr-tagger/state
+/path/to/config/kapowarr-tagger/secrets
+```
 
-Existing descriptions and credits are not included in the proposed changes.
-Multiple issue mappings, grouping overrides, non-CBZ files, missing identities,
-unusual XML placement, and recently changing files are held for review.
-All volume mappings are fetched before filtering, to detect cross-volume clashes.
-This preview rechecks the selected files each poll; incremental caching is future work.
+Create secret files `kapowarr_api_key` and `kavita_api_key` in `secrets`, each
+containing the existing service key. Restrict permissions and never put keys in
+source control. The Kavita key must belong to an account permitted to scan libraries.
+The service authenticates only to the configured local URLs and refuses redirects.
 
-## Before enabling any writer
+Start in `MODE: preview` while the existing bulk writer runs. Do not run two writers
+against the same files. The service lock only protects instances sharing its state
+folder; it cannot lock Kapowarr or a separate local writer.
 
-Test proposed tags on copies of the affected GL and Deadpool files. Verify distinct
-series, correct book counts, CBL matching, and repeat scans in Kavita. Then implement
-archive backups, streaming replacement, CRC verification, race detection, persistent
-change tracking, and coordinated Kavita scans. Do not merely change `:ro` to `:rw`:
-this version has no write mode. The companion must run on the NAS for continuous use.
+```sh
+docker compose up -d kapowarr-tagger
+docker compose logs -f kapowarr-tagger
+```
 
-## Local tests
+Inspect `/state/report.json`. The first cycle observes files; later cycles inspect
+stable files. After the bulk run and grouping verification, stop the local writer,
+disable Kavita's independent folder watcher and scheduled scans, and set `MODE` to
+`write` in Compose. Redeploy the companion. Do not disable Kavita scanning until
+its credentials and the companion's scan request have been verified.
 
-`python3 -m unittest -v test_companion.py`
+Files still settling delay the library-wide scan. Files held for review remain in
+the library and can still be seen by Kavita when it scans; this service does not
+quarantine them. Continuous incoming files may postpone a scan until the library
+is quiet. Kapowarr and other tools must not replace an archive while it is being
+tagged; the writer detects changes but a shared filesystem offers no universal lock.
+
+## Configuration
+
+| Variable | Default / example |
+|---|---|
+| MODE | `preview` or explicitly `write` |
+| KAPOWARR_URL | `http://kapowarr:5656` (append any configured URL base) |
+| KAPOWARR_API_KEY_FILE | `/run/secrets/kapowarr_api_key` |
+| KAVITA_URL | `http://kavita:5000` |
+| KAVITA_API_KEY_FILE | `/run/secrets/kavita_api_key` |
+| KAVITA_LIBRARY_ID | `1` |
+| COMICS_ROOT | `/comics`; must match paths returned by Kapowarr |
+| STATE_DIR | `/state`; must be outside the comics root |
+| POLL_SECONDS | `300`, minimum 60 |
+| SETTLE_SECONDS | `300` |
+| VOLUME_IDS | Optional comma-separated Kapowarr internal IDs, not CV IDs |
+| RUN_ONCE | `true` for one cycle; settling state persists between invocations |
+
+State contains a journal, current report, incremental cache, scan retry flag,
+health timestamp, and metadata rollback records. Keep it persistent between updates.
+Do not publish it: it contains your local library filenames and metadata.
+A stale health timestamp flags failed polling; consult report.json separately for
+pending scan requests and held files. Large initial batches can exceed the health
+window without being stuck. Stop signals finish the current book before exiting.
+
+## Publishing and tests
+
+GitHub Actions runs all tests and builds linux/amd64 and linux/arm64 images at
+`ghcr.io/thef4tdaddy/kapowarr-tagger:preview` and a commit-specific tag. Tagged
+releases get their own image tags. No Docker Hub credentials are required.
+The GitHub package must be public for anonymous pulls; repository visibility alone
+may not set this. Pin a tested commit/version tag for production.
+
+```sh
+python3 -m unittest discover -v
+```
+
+`companion.py` remains a standalone read-only planner. `writer.py` applies an explicit
+reviewed plan with source hashes; `apply_library.py` resumes a local bulk plan.
+Neither CLI is automatically invoked alongside the container service.

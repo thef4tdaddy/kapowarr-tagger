@@ -1,0 +1,48 @@
+services:
+  kapowarr:
+    container_name: kapowarr
+    image: ghcr.io/silasfelinus/kapowarr:latest
+    cpu_shares: 50
+    mem_limit: 1g
+    environment:
+      - PUID=1029
+      - PGID=100
+      - TZ=Etc/UTC
+    volumes:
+      - /path/to/config/kapowarr:/app/db
+      - /path/to/comics:/comics
+      - /path/to/downloads:/downloads
+    ports:
+      - 5656:5656
+    restart: unless-stopped
+  kapowarr-tagger:
+    image: ghcr.io/thef4tdaddy/kapowarr-tagger:preview
+    container_name: kapowarr-tagger
+    user: "1029:100"
+    cpu_shares: 50
+    mem_limit: 256m
+    environment:
+      TZ: Etc/UTC
+      KAPOWARR_URL: http://kapowarr:5656
+      KAPOWARR_API_KEY_FILE: /run/secrets/kapowarr_api_key
+      COMICS_ROOT: /comics
+      STATE_DIR: /state
+      MODE: preview
+      POLL_SECONDS: "300"
+      SETTLE_SECONDS: "300"
+      KAVITA_URL: http://kavita:5000
+      KAVITA_API_KEY_FILE: /run/secrets/kavita_api_key
+      KAVITA_LIBRARY_ID: "1"
+      # Optional comma-separated Kapowarr volume IDs, not Comic Vine IDs.
+      VOLUME_IDS: ""
+    volumes:
+      - /path/to/comics:/comics
+      - /path/to/config/kapowarr-tagger/state:/state
+      - /path/to/config/kapowarr-tagger/secrets/kapowarr_api_key:/run/secrets/kapowarr_api_key:ro
+      - /path/to/config/kapowarr-tagger/secrets/kavita_api_key:/run/secrets/kavita_api_key:ro
+    stop_grace_period: 15m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on: [kapowarr]
+    restart: unless-stopped
