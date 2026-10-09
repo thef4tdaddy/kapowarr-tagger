@@ -1,7 +1,7 @@
 # Add this service under services: in the existing Kapowarr stack.
 services:
   kapowarr-tagger:
-    build: /volume1/docker/kapowarr-tagger
+    image: ghcr.io/thef4tdaddy/kapowarr-tagger:preview
     container_name: kapowarr-tagger
     user: "1029:100"
     cpu_shares: 50

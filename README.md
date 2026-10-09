@@ -1,18 +1,14 @@
 # Kapowarr tagging companion — preview stage
 
-## GitHub and Docker Hub
+## GitHub Container Registry
 
-The included GitHub Actions workflow runs tests, then publishes amd64 and arm64
-images on main-branch pushes, version tags, or manual dispatch. Configure the
-repository variable `DOCKERHUB_USERNAME` and Actions secret `DOCKERHUB_TOKEN`
-with a Docker Hub token authorized to push to your `kapowarr-tagger` repository.
-Enter the token directly in GitHub's secrets UI, not in source code or chat.
-Main publishes `YOUR_USER/kapowarr-tagger:preview` plus a commit tag; there is no
-`latest` tag while the application is preview-only. After a successful build,
-replace `build:` in the Compose addition with
-`image: YOUR_USER/kapowarr-tagger:preview` to avoid building on the NAS.
-GitHub upload alone does not publish an image: registry credentials and a
-successful workflow run are required. Never publish the `state` or `secrets` folders.
+GitHub Actions tests and publishes amd64 and arm64 images to GHCR using its
+built-in GITHUB_TOKEN with packages:write permission. No Docker Hub credentials
+are required. Main publishes `ghcr.io/thef4tdaddy/kapowarr-tagger:preview` plus a
+commit tag; version tags are also published. There is no `latest` tag while this
+is preview-only. After initial publication, ensure the GitHub package visibility
+is public for anonymous NAS pulls. Public repository visibility does not itself
+make a new package public. Never publish the `state` or `secrets` folders.
 
 This version is deliberately read-only. It polls silasfelinus/Kapowarr every
 15 minutes and writes `/state/preview.json`. It does **not** tag comics, trigger
@@ -21,15 +17,15 @@ No web UI or exposed port. No third-party Python dependencies.
 
 ## Installation in your existing stack
 
-1. Copy `Dockerfile` and `companion.py` into `/volume1/docker/kapowarr-tagger`.
+1. Create `/volume1/docker/kapowarr-tagger` on the NAS. The image contains the code.
 2. Create `state` and `secrets` subdirectories there. UID 1029 / GID 100 must
    be able to write `state` and read the secret file.
 3. Put your existing Kapowarr API key into `secrets/kapowarr_api_key` on the NAS.
    Do not paste it into chat or commit it. Restrict its file permissions.
 4. Merge the `kapowarr-tagger` service from `compose.addition.yaml` into the
    existing stack's `services` section. Keep the existing Kapowarr service.
-5. Build and start the companion using your stack manager's build/deploy feature
-   or `docker compose up -d --build kapowarr-tagger` from the stack directory.
+5. Pull and start the companion using your stack manager or
+   `docker compose up -d kapowarr-tagger` from the stack directory.
 6. Inspect `state/preview.json` and container logs. A failed API request is retried
    on the next interval. The comics mount remains read-only.
 
