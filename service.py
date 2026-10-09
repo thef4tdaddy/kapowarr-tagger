@@ -13,7 +13,7 @@ import time
 import unicodedata
 import urllib.parse
 import urllib.request
-from companion import api, desired_tags, read_tags
+from companion import api, desired_tags, read_tags, secret
 from writer import apply_one, sha256
 
 LOG = logging.getLogger('tagger')
@@ -41,7 +41,7 @@ def identity(value):
 
 def request_scan(folder):
     url = os.environ['KAVITA_URL'].rstrip('/')
-    key = Path(os.environ['KAVITA_API_KEY_FILE']).read_text().strip()
+    key = secret('KAVITA_API_KEY')
     root = Path(os.environ.get('COMICS_ROOT', '/comics')).resolve()
     relative = Path(folder).resolve().relative_to(root)
     if not relative.parts:
@@ -251,8 +251,8 @@ def main():
                       os.environ.get('MODE', 'preview'), int(os.environ.get('SETTLE_SECONDS', '300')))
     with (service.directory / 'service.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        token_file = os.environ.get('WEBHOOK_TOKEN_FILE')
-        server = webhook_server(Path(token_file).read_text().strip(), int(os.environ.get('WEBHOOK_PORT', '8080'))) if token_file else None
+        token = secret('WEBHOOK_TOKEN', required=False)
+        server = webhook_server(token, int(os.environ.get('WEBHOOK_PORT', '8080'))) if token else None
         while not STOP.is_set():
             WAKE.clear()
             try:

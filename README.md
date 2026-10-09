@@ -47,10 +47,16 @@ Create these directories on the NAS, writable/readable as appropriate by UID 102
 /path/to/config/kapowarr-tagger/secrets
 ```
 
-Create secret files `kapowarr_api_key` and `kavita_api_key` in `secrets`, each
-containing the existing service key. Restrict permissions and never put keys in
-source control. The Kavita key must belong to an account permitted to scan libraries.
-The service authenticates only to the configured local URLs and refuses redirects.
+Set `KAPOWARR_API_KEY`, `KAVITA_API_KEY`, and `WEBHOOK_TOKEN` directly in the
+Compose `environment:` section. The supplied templates contain empty values to
+fill in privately; never commit populated keys. No secret-file mounts are needed.
+The webhook token must be random, URL-safe, and at least 24 characters.
+
+Optional file-based configuration remains available using `KAPOWARR_API_KEY_FILE`,
+`KAVITA_API_KEY_FILE`, and `WEBHOOK_TOKEN_FILE`. A configured `_FILE` takes precedence;
+an unreadable or empty file does not silently fall back to the environment value.
+The Kavita key must belong to an account permitted to scan libraries.
+The service refuses credential-bearing redirects.
 
 Start in `MODE: preview` while the existing bulk writer runs. Do not run two writers
 against the same files. The service lock only protects instances sharing its state
@@ -124,8 +130,8 @@ Set `KAVITA_COMICS_ROOT` to the comic library mount **inside Kavita**. The compa
 translates paths relative to `COMICS_ROOT`; these roots need not be identical.
 A wrong mapping can result in Kavita ignoring the request.
 
-Create a random URL-safe token (at least 24 characters), store it in the mounted
-`secrets/webhook_token` file, then configure a generic webhook in Kapowarr:
+Set a random URL-safe `WEBHOOK_TOKEN` (at least 24 characters) in Compose,
+then configure a generic webhook in Kapowarr:
 `http://kapowarr-tagger:8080/hooks/YOUR_TOKEN`, subscribed to `download_completed`.
 Keep the token private. No host port needs publishing when both containers share
 the Compose network. The listener rejects missing/incorrect tokens and oversized
@@ -136,7 +142,7 @@ comparison against Kapowarr mappings, not a direct single-file operation. Existi
 unchanged files are skipped. Stable-file checks still apply, and five-minute
 polling catches missed notifications/manual imports. A folder held for review or
 still settling is not submitted until those conditions clear. The listener is
-optional when WEBHOOK_TOKEN_FILE is unset.
+optional when neither WEBHOOK_TOKEN nor WEBHOOK_TOKEN_FILE is set.
 
 
 ## CBR support

@@ -12,8 +12,17 @@ import xml.etree.ElementTree as ET
 LOG = logging.getLogger('tagger')
 
 
+def secret(name, required=True):
+    """An explicitly configured file wins; otherwise use a direct environment value."""
+    filename = os.environ.get(name + '_FILE', '').strip()
+    value = Path(filename).read_text().strip() if filename else os.environ.get(name, '').strip()
+    if required and not value:
+        raise ValueError('Missing ' + name)
+    return value
+
+
 def api(route, payload=None):
-    key = Path(os.environ['KAPOWARR_API_KEY_FILE']).read_text().strip()
+    key = secret('KAPOWARR_API_KEY')
     url = os.environ.get('KAPOWARR_URL', 'http://kapowarr:5656').rstrip('/')
     request = urllib.request.Request(url + '/api/' + route + '?' +
                                      urllib.parse.urlencode({'api_key': key}),
