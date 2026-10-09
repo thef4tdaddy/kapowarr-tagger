@@ -102,6 +102,7 @@ class Service:
         self.path = self.directory / 'state.json'
         self.state = json.loads(self.path.read_text()) if self.path.exists() else {'files': {}, 'pending_folders': []}
 
+        self.state.setdefault('pending_refresh', [])
         self.state.setdefault('pending_folders', [])
         if self.state.pop('pending_scan', False):
             # Upgrade old outbox without falling back to a full-library request.
@@ -132,8 +133,8 @@ class Service:
                     raise ValueError('Multiple issue mappings; review required')
                 if path.is_symlink() or not path.resolve().is_relative_to(self.root):
                     raise ValueError('Path outside comics root or symlink')
-                if path.suffix.lower() != '.cbz':
-                    raise ValueError('Unsupported format; CBZ required')
+                if path.suffix.lower() not in ('.cbz', '.cbr'):
+                    raise ValueError('Unsupported format; CBZ or CBR required')
                 _, volume, issue = matches[0]
                 desired = desired_tags(volume, issue)
                 signature = hashlib.sha256(json.dumps(desired, sort_keys=True).encode()).hexdigest()
@@ -151,6 +152,26 @@ class Service:
                     continue
                 if old_state.get('done') == current and old_state.get('signature') == signature:
                     row['status'] = 'unchanged'
+                    report.append(row)
+                    continue
+                if path.suffix.lower() == '.cbr':
+                    if self.mode != 'write' or os.environ.get('CONVERT_CBR', 'false').lower() != 'true':
+                        row['status'] = 'conversion_proposed'
+                        report.append(row)
+                        continue
+                    from cbr import convert_cbr
+                    # Persist refresh intent before conversion so a restart can recover mappings.
+                    if volume['id'] not in self.state['pending_refresh']:
+                        self.state['pending_refresh'].append(volume['id'])
+                    folder = str(path.parent)
+                    if folder not in self.state['pending_folders']:
+                        self.state['pending_folders'].append(folder)
+                    self.save()
+                    result = convert_cbr(path, self.root, self.directory / 'metadata-backups', desired)
+                    with (self.directory / 'journal.jsonl').open('a') as journal:
+                        journal.write(json.dumps(dict(result, time=time.time())) + '\n')
+                        journal.flush(); os.fsync(journal.fileno())
+                    row.update(result)
                     report.append(row)
                     continue
                 tags = read_tags(path)
@@ -190,6 +211,14 @@ class Service:
                 if identity(path) not in mappings:
                     report.append({'file': str(path), 'status': 'unmapped'})
         self.save()
+        if self.mode == 'write':
+            for volume_id in list(self.state['pending_refresh']):
+                try:
+                    api('system/tasks', {'cmd': 'refresh_and_scan', 'volume_id': int(volume_id)})
+                    self.state['pending_refresh'].remove(volume_id)
+                    self.save()
+                except Exception as exc:
+                    LOG.warning('Kapowarr refresh failed (%s); retained for retry', type(exc).__name__)
         scan = 'not_requested'
         blocked = {str(Path(r['file']).parent) for r in report
                    if r['status'] in ('settling', 'review')}

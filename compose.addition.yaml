@@ -13,6 +13,7 @@ services:
       COMICS_ROOT: /comics
       STATE_DIR: /state
       MODE: preview
+      CONVERT_CBR: "true"
       POLL_SECONDS: "300"
       SETTLE_SECONDS: "300"
       KAVITA_URL: http://kavita:5000

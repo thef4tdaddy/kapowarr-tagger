@@ -137,3 +137,23 @@ unchanged files are skipped. Stable-file checks still apply, and five-minute
 polling catches missed notifications/manual imports. A folder held for review or
 still settling is not submitted until those conditions clear. The listener is
 optional when WEBHOOK_TOKEN_FILE is unset.
+
+
+## CBR support
+
+Set `CONVERT_CBR: "true"` to enable CBR-to-CBZ conversion in write mode. Preview
+mode reports `conversion_proposed` and leaves the source unchanged. Image bytes
+are preserved; there is no resizing or lossy recompression. The converter streams
+RAR entries through libarchive, verifies content hashes, adds the grouping tags,
+and verifies the published CBZ before deleting its source CBR. Existing CBZ targets
+are never overwritten; collisions require review. Encrypted, damaged, unsafe, or
+unsupported archives remain unchanged.
+
+Conversion needs temporary disk space for the new archive and verification; it
+does not retain a permanent full-file backup. Small original metadata backups are
+kept, but these cannot reconstruct the original RAR container byte for byte.
+Kapowarr receives a `refresh_and_scan` task for the affected volume after conversion,
+with a durable retry queue. Its next API snapshot should reflect the new extension.
+Kavita receives the folder notification. Keep other writers and independent scans
+from touching the same book during conversion. A crash may leave both formats;
+that collision is held for review rather than automatically deleting either file.

@@ -12,11 +12,13 @@ import xml.etree.ElementTree as ET
 LOG = logging.getLogger('tagger')
 
 
-def api(route):
+def api(route, payload=None):
     key = Path(os.environ['KAPOWARR_API_KEY_FILE']).read_text().strip()
     url = os.environ.get('KAPOWARR_URL', 'http://kapowarr:5656').rstrip('/')
     request = urllib.request.Request(url + '/api/' + route + '?' +
-                                     urllib.parse.urlencode({'api_key': key}))
+                                     urllib.parse.urlencode({'api_key': key}),
+                                     data=json.dumps(payload).encode() if payload is not None else None,
+                                     headers={'Content-Type': 'application/json'})
     # Do not follow redirects carrying credentials to a different destination.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
@@ -82,8 +84,14 @@ def plan(volumes, root, only=()):
             path = Path(filename)
             if path.is_symlink() or not path.resolve().is_relative_to(root):
                 raise ValueError('Path outside comics root or symlink')
+            if path.suffix.lower() == '.cbr':
+                if path.with_suffix('.cbz').exists():
+                    raise ValueError('CBZ target already exists; review before conversion')
+                row.update(status='conversion_proposed', desired=desired_tags(*matches[0]))
+                yield row
+                continue
             if path.suffix.lower() != '.cbz':
-                raise ValueError('Only CBZ supported in this preview')
+                raise ValueError('Only CBZ and CBR conversion supported')
             before = path.stat()
             if time.time() - before.st_mtime < 300:
                 raise ValueError('Recently changed file; retry later')
