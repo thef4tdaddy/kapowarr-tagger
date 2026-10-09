@@ -1,0 +1,26 @@
+# Add this service under services: in the existing Kapowarr stack.
+services:
+  kapowarr-tagger:
+    build: /volume1/docker/kapowarr-tagger
+    container_name: kapowarr-tagger
+    user: "1029:100"
+    cpu_shares: 50
+    mem_limit: 256m
+    environment:
+      TZ: America/Chicago
+      KAPOWARR_URL: http://kapowarr:5656
+      KAPOWARR_API_KEY_FILE: /run/secrets/kapowarr_api_key
+      COMICS_ROOT: /comics
+      STATE_DIR: /state
+      POLL_SECONDS: "900"
+      # Optional comma-separated Kapowarr volume IDs, not Comic Vine IDs.
+      VOLUME_IDS: ""
+    volumes:
+      - /volume1/Multimedia/Comics:/comics:ro
+      - /volume1/docker/kapowarr-tagger/state:/state
+      - /volume1/docker/kapowarr-tagger/secrets/kapowarr_api_key:/run/secrets/kapowarr_api_key:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on: [kapowarr]
+    restart: unless-stopped
