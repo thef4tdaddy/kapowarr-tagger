@@ -173,3 +173,9 @@ connection/authentication status without exposing keys or response bodies.
 Failures do not stop the metadata preview. This does not request a scan,
 change reading history, or prove the account has scan permissions. A live folder
 notification remains the final write-mode integration check.
+
+Authenticated download-completed webhooks log
+`Kapowarr webhook received: download_completed; incremental check requested`.
+Other authenticated events log that they were ignored. Tokens, URLs and payload
+contents are never included in these messages. Receipt requests a check; it does
+not imply tagging or scanning has finished.

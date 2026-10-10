@@ -110,7 +110,10 @@ def webhook_server(token, port):
             except (ValueError, TimeoutError):
                 self.send_error(400); return
             if payload.get('event') == 'download_completed':
+                LOG.info('Kapowarr webhook received: download_completed; incremental check requested')
                 WAKE.set()
+            else:
+                LOG.info('Kapowarr webhook received: authenticated event ignored (not download_completed)')
             self.send_response(202); self.end_headers()
     server = ThreadingHTTPServer(('0.0.0.0', port), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()

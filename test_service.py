@@ -112,8 +112,11 @@ class WebhookTests(unittest.TestCase):
             with post(token, 'import_failed') as response:
                 self.assertEqual(response.status, 202)
             self.assertFalse(WAKE.is_set())
-            with post(token, 'download_completed') as response:
-                self.assertEqual(response.status, 202)
+            with self.assertLogs('tagger', level='INFO') as logs:
+                with post(token, 'download_completed') as response:
+                    self.assertEqual(response.status, 202)
+            self.assertIn('Kapowarr webhook received: download_completed', logs.output[0])
+            self.assertNotIn(token, str(logs.output))
             self.assertTrue(WAKE.is_set())
         finally:
             server.shutdown(); server.server_close(); WAKE.clear()
