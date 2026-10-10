@@ -39,6 +39,34 @@ def identity(value):
     return unicodedata.normalize('NFC', str(value))
 
 
+def check_kavita():
+    """Read-only authentication probe; does not prove scan authorization."""
+    try:
+        url = os.environ.get('KAVITA_URL', '').rstrip('/')
+        key = secret('KAVITA_API_KEY')
+        if urllib.parse.urlparse(url).scheme not in ('http', 'https'):
+            raise ValueError('Invalid URL')
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+        request = urllib.request.Request(url + '/api/Library/libraries',
+            headers={'x-api-key': key, 'Accept': 'application/json'}, method='GET')
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=15) as response:
+            data = json.load(response)
+            if response.status != 200 or not isinstance(data, list):
+                return {'status': 'invalid_response'}
+            if any(not isinstance(item, dict) or 'id' not in item for item in data):
+                return {'status': 'invalid_response'}
+            return {'status': 'connected', 'accessible_libraries': len(data)}
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        return {'status': 'authentication_failed' if exc.code == 401 else
+                'access_denied' if exc.code == 403 else 'http_error', 'http_status': exc.code}
+    except (KeyError, ValueError, OSError) as exc:
+        # Never expose credential-bearing URLs, response bodies, or exception strings.
+        return {'status': 'configuration_error' if isinstance(exc, (KeyError, ValueError)) else 'connection_failed'}
+
+
 def request_scan(folder):
     url = os.environ['KAVITA_URL'].rstrip('/')
     key = secret('KAVITA_API_KEY')
@@ -112,7 +140,9 @@ class Service:
     def save(self):
         atomic_json(self.path, self.state)
 
-    def cycle(self, volumes, notify=request_scan):
+    def cycle(self, volumes, notify=request_scan, probe=check_kavita):
+        connection = probe()
+        LOG.info('Kavita connection check (read-only): %s', connection)
         mappings = {}
         for volume in volumes:
             for issue in volume.get('issues', []):
@@ -237,7 +267,7 @@ class Service:
                     LOG.warning('Kavita folder request failed (%s); retained for retry', type(exc).__name__)
         summary = {status: sum(r['status'] == status for r in report) for status in {r['status'] for r in report}}
         atomic_json(self.directory / 'report.json', {'time': time.time(), 'mode': self.mode,
-                    'counts': summary, 'scan_request': scan, 'files': report})
+                    'counts': summary, 'scan_request': scan, 'kavita_connection': connection, 'files': report})
         atomic_json(self.directory / 'health.json', {'last_success': time.time(), 'mode': self.mode})
         LOG.info('Cycle complete: %s; scan=%s', summary, scan)
         return report

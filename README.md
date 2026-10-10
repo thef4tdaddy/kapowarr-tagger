@@ -163,3 +163,13 @@ with a durable retry queue. Its next API snapshot should reflect the new extensi
 Kavita receives the folder notification. Keep other writers and independent scans
 from touching the same book during conversion. A crash may leave both formats;
 that collision is held for review rather than automatically deleting either file.
+
+
+## Preview connection check
+
+Every cycle, including preview, makes an authenticated GET to Kavita's
+`/api/Library/libraries`. Logs and report.json (`kavita_connection`) report
+connection/authentication status without exposing keys or response bodies.
+Failures do not stop the metadata preview. This does not request a scan,
+change reading history, or prove the account has scan permissions. A live folder
+notification remains the final write-mode integration check.
