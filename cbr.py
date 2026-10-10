@@ -12,7 +12,7 @@ from writer import sha256, inventory, apply_one
 from companion import read_tags
 
 
-def convert_cbr(source, root, backups, desired):
+def convert_cbr(source, root, backups, desired, before_commit=None):
     source, root = Path(source), Path(root).resolve()
     if source.is_symlink() or not source.resolve().is_relative_to(root) or source.suffix.lower() != '.cbr':
         raise ValueError('Unsafe CBR source')
@@ -88,6 +88,8 @@ def convert_cbr(source, root, backups, desired):
         os.chmod(target, mode)
         if sha256(target) != sha256(temp) or sha256(source) != original_hash:
             raise ValueError('Published conversion verification failed')
+        if before_commit is not None:
+            before_commit()
         source.unlink()
         return {'file': str(target), 'source': str(source), 'status': 'converted',
                 'source_sha256': original_hash, 'after_sha256': sha256(target)}

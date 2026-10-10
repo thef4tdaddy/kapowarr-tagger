@@ -192,15 +192,20 @@ class Service:
                         row['status'] = 'conversion_proposed'
                         report.append(row)
                         continue
+                    if path.with_suffix('.cbz').exists():
+                        raise ValueError('CBZ target already exists; review before conversion')
                     from cbr import convert_cbr
-                    # Persist refresh intent before conversion so a restart can recover mappings.
-                    if volume['id'] not in self.state['pending_refresh']:
-                        self.state['pending_refresh'].append(volume['id'])
-                    folder = str(path.parent)
-                    if folder not in self.state['pending_folders']:
-                        self.state['pending_folders'].append(folder)
-                    self.save()
-                    result = convert_cbr(path, self.root, self.directory / 'metadata-backups', desired)
+                    def queue_conversion_refresh():
+                        # Called only after output verification, immediately before source removal.
+                        # Persist first so interruption cannot lose a needed mapping refresh.
+                        if volume['id'] not in self.state['pending_refresh']:
+                            self.state['pending_refresh'].append(volume['id'])
+                        folder = str(path.parent)
+                        if folder not in self.state['pending_folders']:
+                            self.state['pending_folders'].append(folder)
+                        self.save()
+                    result = convert_cbr(path, self.root, self.directory / 'metadata-backups',
+                                         desired, before_commit=queue_conversion_refresh)
                     with (self.directory / 'journal.jsonl').open('a') as journal:
                         journal.write(json.dumps(dict(result, time=time.time())) + '\n')
                         journal.flush(); os.fsync(journal.fileno())
@@ -246,6 +251,15 @@ class Service:
         self.save()
         if self.mode == 'write':
             for volume_id in list(self.state['pending_refresh']):
+                # Reconcile old requests from rejected conversions, or a refresh that
+                # completed server-side despite a timeout. Keep requests with stale paths.
+                paths = [Path(f['filepath']) for v in volumes if str(v['id']) == str(volume_id)
+                         for issue in v.get('issues', []) for f in issue.get('files', [])]
+                if paths and all(p.resolve().is_relative_to(self.root) and p.is_file() for p in paths):
+                    self.state['pending_refresh'].remove(volume_id)
+                    self.save()
+                    LOG.info('Cleared unnecessary Kapowarr refresh for volume %s: mapped files exist', volume_id)
+                    continue
                 try:
                     api('system/tasks', {'cmd': 'refresh_and_scan', 'volume_id': int(volume_id)})
                     self.state['pending_refresh'].remove(volume_id)

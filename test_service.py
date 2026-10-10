@@ -135,9 +135,30 @@ class CbrServiceTests(unittest.TestCase):
                 svc.cycle(volumes,Mock())
                 self.assertEqual(svc.cycle(volumes,Mock())[0]['status'],'converted')
             self.assertEqual(svc.state['pending_refresh'],[1])
-            volumes[0]['issues'][0]['files'][0]['filepath']=str(p.with_suffix('.cbz'))
             svc=Service(root,Path(d)/'state','write',settle=0)
             with patch('service.api') as api:
                 svc.cycle(volumes,Mock())
                 api.assert_called_once_with('system/tasks',{'cmd':'refresh_and_scan','volume_id':1})
             self.assertFalse(svc.state['pending_refresh'])
+
+
+class RefreshQueueTests(unittest.TestCase):
+    def test_collision_clears_legacy_refresh_without_requeue(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)/'comics';root.mkdir()
+            p=root/'one.cbr';p.write_bytes(b'original')
+            p.with_suffix('.cbz').write_bytes(b'existing')
+            volumes=[{'id':48,'title':'Test','year':2026,'comicvine_id':123,
+                      'issues':[{'issue_number':'1','files':[{'filepath':str(p)}]}]}]
+            svc=Service(root,Path(d)/'state','write',settle=0)
+            svc.state['pending_refresh']=[48];svc.save()
+            with patch.dict(os.environ,{'CONVERT_CBR':'true'}), patch('service.api') as api:
+                svc.cycle(volumes,Mock())
+                for _ in range(2):
+                    report=svc.cycle(volumes,Mock())
+                    self.assertEqual(report[0]['status'],'review')
+                    self.assertIn('target already exists',report[0]['reason'])
+                api.assert_not_called()
+            self.assertFalse(svc.state['pending_refresh'])
+            self.assertEqual(p.read_bytes(),b'original')
+            self.assertEqual(p.with_suffix('.cbz').read_bytes(),b'existing')
