@@ -179,3 +179,20 @@ Authenticated download-completed webhooks log
 Other authenticated events log that they were ignored. Tokens, URLs and payload
 contents are never included in these messages. Receipt requests a check; it does
 not imply tagging or scanning has finished.
+
+
+## Adaptive scheduling
+
+On startup the service performs a catch-up check. Until it receives an authenticated
+`download_completed` webhook (including Kapowarr's matching test event), it polls
+every POLL_SECONDS (300 by default). It then switches to event-driven checks, with
+SETTLE_SECONDS follow-ups for settling files and POLL_SECONDS retries for failures.
+When there is no actionable work it waits for a webhook, without scanning the
+library or calling either API. Review-only files do not cause endless polling.
+Health heartbeats continue while idle, so Docker does not mark a quiet service unhealthy.
+
+Webhook verification is stored against a hash of the configured token and survives
+restart. A changed/missing token returns to fallback polling until verified again.
+After switching, missed webhooks or direct filesystem additions are caught by the
+next webhook or startup catch-up, not periodic reconciliation. Changing the token
+requires updating the Kapowarr notification too.

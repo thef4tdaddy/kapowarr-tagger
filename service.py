@@ -19,6 +19,7 @@ from writer import apply_one, sha256
 LOG = logging.getLogger('tagger')
 STOP = threading.Event()
 WAKE = threading.Event()
+WEBHOOK_SEEN = threading.Event()
 
 
 def atomic_json(path, data):
@@ -110,6 +111,7 @@ def webhook_server(token, port):
             except (ValueError, TimeoutError):
                 self.send_error(400); return
             if payload.get('event') == 'download_completed':
+                WEBHOOK_SEEN.set()
                 LOG.info('Kapowarr webhook received: download_completed; incremental check requested')
                 WAKE.set()
             else:
@@ -290,6 +292,32 @@ class Service:
         return report
 
 
+def next_delay(webhook_seen, report, state, mode, failed=False, poll=300, settle=300):
+    """None means idle until a webhook; only actionable work schedules follow-ups."""
+    if failed or not webhook_seen:
+        return max(60, poll)
+    if any(row['status'] == 'settling' for row in report):
+        return max(60, settle)
+    blocked = {str(Path(row['file']).parent) for row in report
+               if row['status'] == 'review'}
+    if mode == 'write' and (state.get('pending_refresh') or
+            any(folder not in blocked for folder in state.get('pending_folders', []))):
+        return max(60, poll)
+    return None
+
+
+def wait_for_work(service, delay, healthy=True):
+    # Refresh liveness while idle; this performs no library/API polling.
+    deadline = None if delay is None else time.monotonic() + delay
+    while not STOP.is_set():
+        if healthy:
+            atomic_json(service.directory / 'health.json',
+                        {'last_success': time.time(), 'mode': service.mode, 'idle': True})
+        remaining = 60 if deadline is None else min(60, max(0, deadline - time.monotonic()))
+        if remaining <= 0 or WAKE.wait(remaining):
+            return
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -299,18 +327,36 @@ def main():
     with (service.directory / 'service.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         token = secret('WEBHOOK_TOKEN', required=False)
+        token_fingerprint = hashlib.sha256(token.encode()).hexdigest() if token else None
+        WEBHOOK_SEEN.clear()
+        if token and service.state.get('webhook_verified_token') == token_fingerprint:
+            WEBHOOK_SEEN.set()
         server = webhook_server(token, int(os.environ.get('WEBHOOK_PORT', '8080'))) if token else None
         while not STOP.is_set():
             WAKE.clear()
+            failed, report = False, []
             try:
                 # Fetch complete snapshot before modifying anything; fail closed on API errors.
                 volumes = [api('volumes/' + str(v['id'])) for v in api('volumes')]
-                service.cycle(volumes)
+                report = service.cycle(volumes)
             except Exception as exc:
-                LOG.error('Cycle failed (%s); retry next poll', type(exc).__name__)
+                failed = True
+                LOG.error('Cycle failed (%s); retry scheduled', type(exc).__name__)
             if os.environ.get('RUN_ONCE') == 'true':
                 break
-            WAKE.wait(max(60, int(os.environ.get('POLL_SECONDS', '300'))))
+            verified = bool(token) and WEBHOOK_SEEN.is_set()
+            if verified and service.state.get('webhook_verified_token') != token_fingerprint:
+                service.state['webhook_verified_token'] = token_fingerprint
+                service.save()
+                LOG.info('Webhook verified; switching from fallback polling to event-driven checks')
+            delay = next_delay(verified, report, service.state, service.mode, failed,
+                               int(os.environ.get('POLL_SECONDS', '300')), service.settle)
+            if delay is None:
+                LOG.info('Idle: waiting for webhook; no library polling scheduled')
+            else:
+                LOG.info('Next check in %s seconds (%s)', delay,
+                         'follow-up/retry' if verified else 'webhook not yet verified')
+            wait_for_work(service, delay, healthy=not failed)
         if server:
             server.shutdown(); server.server_close()
 
