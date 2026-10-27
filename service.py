@@ -293,8 +293,8 @@ class Service:
         return report
 
 
-def next_delay(webhook_seen, report, state, mode, failed=False, poll=300, settle=300):
-    """None means idle until a webhook; only actionable work schedules follow-ups."""
+def next_delay(webhook_seen, report, state, mode, failed=False, poll=300, settle=300, reconcile=3600):
+    """Hourly reconciliation catches manual changes; webhooks can wake sooner."""
     if failed or not webhook_seen:
         return max(60, poll)
     if any(row['status'] == 'settling' for row in report):
@@ -304,7 +304,7 @@ def next_delay(webhook_seen, report, state, mode, failed=False, poll=300, settle
     if mode == 'write' and (state.get('pending_refresh') or
             any(folder not in blocked for folder in state.get('pending_folders', []))):
         return max(60, poll)
-    return None
+    return max(60, reconcile) if reconcile > 0 else None
 
 
 def wait_for_work(service, delay, healthy=True):
@@ -355,7 +355,14 @@ def main():
                 service.save()
                 LOG.info('Webhook verified; switching from fallback polling to event-driven checks')
             delay = next_delay(verified, report, service.state, service.mode, failed,
-                               int(os.environ.get('POLL_SECONDS', '300')), service.settle)
+                               int(os.environ.get('POLL_SECONDS', '300')), service.settle, reconcile=0)
+            if delay is None:
+                interval = int(os.environ.get('RECONCILE_SECONDS', '3600'))
+                delay = max(60, interval) if interval > 0 else None
+                if delay is not None:
+                    LOG.info('Next reconciliation in %s seconds; webhook can trigger an earlier check', delay)
+                    wait_for_work(service, delay, healthy=not failed)
+                    continue
             if delay is None:
                 LOG.info('Idle: waiting for webhook; no library polling scheduled')
             else:

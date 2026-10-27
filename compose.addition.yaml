@@ -15,6 +15,7 @@ services:
       MODE: preview
       CONVERT_CBR: "true"
       POLL_SECONDS: "300"
+      RECONCILE_SECONDS: "3600" # Catch manual changes even after webhook verification
       SETTLE_SECONDS: "300"
       KAVITA_URL: http://kavita:5000
       KAVITA_API_KEY: "" # Fill in your private Compose stack

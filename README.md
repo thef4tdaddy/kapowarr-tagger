@@ -92,6 +92,7 @@ tagged; the writer detects changes but a shared filesystem offers no universal l
 | COMICS_ROOT | `/comics`; must match paths returned by Kapowarr |
 | STATE_DIR | `/state`; must be outside the comics root |
 | POLL_SECONDS | `300`, minimum 60 |
+| RECONCILE_SECONDS | `3600`; idle fallback check, `0` disables |
 | SETTLE_SECONDS | `300` |
 | VOLUME_IDS | Optional comma-separated Kapowarr internal IDs, not CV IDs |
 | RUN_ONCE | `true` for one cycle; settling state persists between invocations |
@@ -187,15 +188,18 @@ On startup the service performs a catch-up check. Until it receives an authentic
 `download_completed` webhook (including Kapowarr's matching test event), it polls
 every POLL_SECONDS (300 by default). It then switches to event-driven checks, with
 SETTLE_SECONDS follow-ups for settling files and POLL_SECONDS retries for failures.
-When there is no actionable work it waits for a webhook, without scanning the
-library or calling either API. Review-only files do not cause endless polling.
-Health heartbeats continue while idle, so Docker does not mark a quiet service unhealthy.
+When there is no actionable work it waits up to RECONCILE_SECONDS (one hour by
+default), or until a webhook arrives. Each check compares the current Kapowarr
+mappings and skips unchanged files. This catches manual imports/fixes once
+Kapowarr has mapped them. It does not force Kapowarr to rescan disk or force a
+full Kavita library scan. New files still get a settling follow-up before writing.
+Health heartbeats continue during the wait.
 
 Webhook verification is stored against a hash of the configured token and survives
-restart. A changed/missing token returns to fallback polling until verified again.
-After switching, missed webhooks or direct filesystem additions are caught by the
-next webhook or startup catch-up, not periodic reconciliation. Changing the token
-requires updating the Kapowarr notification too.
+restart. A changed/missing token returns to five-minute fallback polling until
+verified again. Set RECONCILE_SECONDS to 0 to restore webhook-only idle behavior.
+The hourly interval starts after the latest completed check; webhook checks reset
+it because they perform the same comparison.
 
 
 ## Discord notifications
