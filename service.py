@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 from companion import KapowarrAPIError, api, desired_tags, read_tags, secret
 from writer import apply_one, sha256
+from discord_notify import DiscordNotifier
 
 LOG = logging.getLogger('tagger')
 STOP = threading.Event()
@@ -326,6 +327,7 @@ def main():
                       os.environ.get('MODE', 'preview'), int(os.environ.get('SETTLE_SECONDS', '300')))
     with (service.directory / 'service.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        discord = DiscordNotifier(service.directory)
         token = secret('WEBHOOK_TOKEN', required=False)
         token_fingerprint = hashlib.sha256(token.encode()).hexdigest() if token else None
         WEBHOOK_SEEN.clear()
@@ -339,8 +341,10 @@ def main():
                 # Fetch complete snapshot before modifying anything; fail closed on API errors.
                 volumes = [api('volumes/' + str(v['id'])) for v in api('volumes')]
                 report = service.cycle(volumes)
+                discord.update(report=json.loads((service.directory / 'report.json').read_text()))
             except Exception as exc:
                 failed = True
+                discord.update(error=str(exc) if isinstance(exc, KapowarrAPIError) else type(exc).__name__)
                 LOG.error('Cycle failed (%s); retry scheduled',
                           str(exc) if isinstance(exc, KapowarrAPIError) else type(exc).__name__)
             if os.environ.get('RUN_ONCE') == 'true':

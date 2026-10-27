@@ -35,6 +35,7 @@ services:
       KAVITA_API_KEY: "" # Fill in your private Compose stack
       KAVITA_COMICS_ROOT: /comics # Must match the path INSIDE Kavita
       WEBHOOK_TOKEN: "" # Fill in your private Compose stack
+      DISCORD_WEBHOOK_URL: "" # Optional private Discord webhook URL
       WEBHOOK_PORT: "8080"
       # Optional comma-separated Kapowarr volume IDs, not Comic Vine IDs.
       VOLUME_IDS: ""

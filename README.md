@@ -196,3 +196,25 @@ restart. A changed/missing token returns to fallback polling until verified agai
 After switching, missed webhooks or direct filesystem additions are caught by the
 next webhook or startup catch-up, not periodic reconciliation. Changing the token
 requires updating the Kapowarr notification too.
+
+
+## Discord notifications
+
+Optionally set `DISCORD_WEBHOOK_URL` in the tagger's Compose environment to a
+Discord channel webhook URL (or use `DISCORD_WEBHOOK_URL_FILE`). Keep it private;
+anyone with this URL can post to that channel. Recreate the container after changing
+the environment. No Discord configuration is needed in Kapowarr or Kavita. Keep
+Kapowarr's existing download-completed webhook to the tagger enabled.
+
+Notices cover written metadata, CBR conversions, new review/unmapped items, cycle
+failures and recovery, and Kavita connection/scan request problems. The first check
+after enabling notifications includes existing review/unmapped items as a baseline.
+Preview can report attention/errors but never announces proposed changes as applied.
+Repeated identical failures and unchanged checks stay quiet. Deduplication is stored
+in `/state/discord-state.json` and survives restarts. Mentions are disabled.
+
+Scan accepted means Kavita accepted the request, not that import is finished.
+Discord delivery is best-effort: failures are logged without credentials and never
+stop tagging. Persistent attention/error notices retry on the next processing cycle;
+transient completion messages are not queued for later delivery. A stopped container
+cannot notify you; this is not a replacement for external uptime monitoring.
