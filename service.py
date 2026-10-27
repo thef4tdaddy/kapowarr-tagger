@@ -13,7 +13,7 @@ import time
 import unicodedata
 import urllib.parse
 import urllib.request
-from companion import api, desired_tags, read_tags, secret
+from companion import KapowarrAPIError, api, desired_tags, read_tags, secret
 from writer import apply_one, sha256
 
 LOG = logging.getLogger('tagger')
@@ -341,7 +341,8 @@ def main():
                 report = service.cycle(volumes)
             except Exception as exc:
                 failed = True
-                LOG.error('Cycle failed (%s); retry scheduled', type(exc).__name__)
+                LOG.error('Cycle failed (%s); retry scheduled',
+                          str(exc) if isinstance(exc, KapowarrAPIError) else type(exc).__name__)
             if os.environ.get('RUN_ONCE') == 'true':
                 break
             verified = bool(token) and WEBHOOK_SEEN.is_set()

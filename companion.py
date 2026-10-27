@@ -2,6 +2,8 @@
 import json
 import logging
 import os
+import re
+import urllib.error
 from pathlib import Path
 import time
 import urllib.parse
@@ -21,6 +23,10 @@ def secret(name, required=True):
     return value
 
 
+class KapowarrAPIError(RuntimeError):
+    """Contains only allowlisted diagnostic information, never server text."""
+
+
 def api(route, payload=None):
     key = secret('KAPOWARR_API_KEY')
     url = os.environ.get('KAPOWARR_URL', 'http://kapowarr:5656').rstrip('/')
@@ -32,10 +38,28 @@ def api(route, payload=None):
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None
-    with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response:
-        body = json.load(response)
-    if body.get('error'):
-        raise ValueError('Kapowarr returned an API error')
+    safe_route = route if re.fullmatch(r"volumes(?:/[0-9]+)?|system/tasks", route) else "[redacted-route]"
+    method = 'POST' if payload is not None else 'GET'
+    context = f'Kapowarr {method} /api/{safe_route}'
+    try:
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response:
+            body = json.load(response)
+    except urllib.error.HTTPError as exc:
+        code = exc.code
+        exc.close()
+        hint = {401: 'check KAPOWARR_API_KEY', 403: 'access denied; check API permissions',
+                404: 'endpoint not found; check KAPOWARR_URL and server version',
+                429: 'rate limited; retry scheduled'}.get(code)
+        if hint is None:
+            hint = ('redirect refused; check KAPOWARR_URL' if 300 <= code < 400 else
+                    'server error; check Kapowarr logs' if code >= 500 else 'request rejected')
+        raise KapowarrAPIError(f'{context}: HTTP {code}; {hint}') from None
+    except (urllib.error.URLError, TimeoutError):
+        raise KapowarrAPIError(f'{context}: connection failed or timed out; check server/network') from None
+    except (ValueError, UnicodeError):
+        raise KapowarrAPIError(f'{context}: invalid JSON response') from None
+    if not isinstance(body, dict) or 'result' not in body or body.get('error'):
+        raise KapowarrAPIError(f'{context}: invalid response or API error; check Kapowarr logs')
     return body['result']
 
 
