@@ -144,6 +144,43 @@ class Retention:
     def save(self):
         durable_json(self.path, self.data)
 
+    def queue_notice(self, event_id, file, status, **fields):
+        queue = self.data.setdefault('notification_outbox', {})
+        queue.setdefault(event_id, dict(file=file, status=status, mode=self.mode, **fields))
+
+    def flush_notices(self, discord, now=None, allow_warnings=True):
+        now = time.time() if now is None else now
+        queue = self.data.setdefault('notification_outbox', {})
+        for event_id, event in list(queue.items())[:20]:
+            if event['status'] in ('countdown_started', 'three_days'):
+                if not allow_warnings:
+                    continue
+                candidate = self.data['candidates'].get(event['identity'])
+                # Cancel queued warnings if Keep/unread/changed/missing reset the countdown.
+                if (not candidate or candidate.get('notice_token') != event['token']
+                        or now >= event['due'] or event['mode'] != self.mode
+                        or (event['status'] == 'countdown_started' and now >= event['due'] - 3 * 86400)):
+                    del queue[event_id]
+                    self.save()
+                    continue
+                remaining = max(1, int((event['due'] - now + 86399) // 86400))
+                label = f"Deletion in {remaining} days; scheduled <t:{int(event['due'])}:f>"
+                if event['mode'] == 'preview':
+                    label = f"Preview: eligible in {remaining} days (<t:{int(event['due'])}:f>); deletion disabled"
+                message = label + '\n' + event['file'][:300] + '\nAdd to Keep to retain it.'
+            else:
+                message = 'Kapowarr Tagger: ' + event['status'] + '\n' + event['file'][:300]
+            try:
+                if not discord.send(message):
+                    return
+            except Exception as exc:
+                if hasattr(exc, 'close'):
+                    exc.close()
+                LOG.warning('Retention Discord notification failed (%s); retained for retry', type(exc).__name__)
+                return
+            del queue[event_id]
+            self.save()
+
     def mapped(self, books, volumes, allowed):
         maps = {}
         for volume in volumes:
@@ -222,6 +259,7 @@ class Retention:
                             raise RetentionError('Completion restoration not confirmed')
                         summary['restored'] += 1
                         summary['events'].append({'file': path.name, 'status': 'restored'})
+                        self.queue_notice('restored:' + restore_key, path.name, 'completion restored')
                     self.data['restorations'][restore_key] = {'time': now, 'chapter_id': cid}
                     self.save()
                 continue  # No deletion in the restoration cycle.
@@ -235,7 +273,17 @@ class Retention:
             if not candidate or candidate['marker'] != marker:
                 candidate = {'since': now, 'marker': marker}
                 self.data['candidates'][key] = candidate
-            if now - candidate['since'] < self.days * 86400:
+            due = candidate['since'] + self.days * 86400
+            token = candidate.setdefault('notice_token', str(uuid.uuid4()))
+            # Preview and write each have their own one-time warning milestones.
+            notified = candidate.setdefault('notice_stages', [])
+            stage = 'three_days' if due - now <= 3 * 86400 else 'countdown_started'
+            stage_key = self.mode + ':' + stage
+            if now < due and stage_key not in notified:
+                self.queue_notice(token + ':' + stage_key, path.name, stage,
+                    identity=key, token=token, due=due)
+                notified.append(stage_key)
+            if now < due:
                 summary['waiting'] += 1
                 continue
             summary['eligible'] += 1
@@ -293,6 +341,7 @@ class Retention:
                 raise RetentionError('Kapowarr deletion not confirmed on disk')
             record['outcome'] = 'deleted'
             record['deleted_at'] = now
+            self.queue_notice('deleted:' + record['id'], path.name, 'deleted — history saved')
             self.data['candidates'].pop(key, None)
             self.save()
             summary['deleted'] += 1
@@ -326,22 +375,14 @@ def run_retention(service, volumes, report, discord):
         os.environ['KAVITA_COMICS_ROOT'], Kavita(),
         int(os.environ.get('KEEP_READING_LIST_ID') or '0'), mode,
         int(os.environ.get('CLEANUP_DAYS', '30')), stopped=lambda: service.stopping())
-    result = retention.cycle(volumes, report)
+    succeeded = False
+    try:
+        result = retention.cycle(volumes, report)
+        succeeded = True
+    finally:
+        # A later scan/API failure must not lose already-confirmed deletion notices.
+        retention.flush_notices(discord, allow_warnings=succeeded)
     LOG.info('Retention check: mode=%s mapped=%s protected=%s waiting=%s eligible=%s deleted=%s restored=%s',
         mode, result['mapped'], result['protected'], result['waiting'], result['eligible'], result['deleted'], result['restored'])
-    # Send only changed eligible sets or actual mutations, not every hourly check.
-    signature = hashlib.sha256(json.dumps(result['events'], sort_keys=True).encode()).hexdigest()
-    if result['events'] and signature != service.state.get('last_retention_notice'):
-        message = 'Kapowarr Tagger retention (' + mode + ')\n' + '\n'.join(
-            e['status'] + ': ' + e['file'][:140] for e in result['events'][:10])
-        try:
-            if discord.send(message):
-                service.state['last_retention_notice'] = signature
-        except Exception as exc:
-            if hasattr(exc, 'close'):
-                exc.close()
-            LOG.warning('Retention Discord notification failed (%s)', type(exc).__name__)
-    elif not result['events']:
-        service.state.pop('last_retention_notice', None)
     service.state['last_retention_check'] = time.time()
     service.save()

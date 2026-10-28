@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from retention import Retention, RetentionError, Kavita, complete
 
 DAY = 86400
@@ -184,6 +184,46 @@ class RetentionTests(unittest.TestCase):
             client.restore(2,3)
             self.assertEqual(request.call_args.args[1],
                 {'seriesId':2,'chapterId':3,'generateReadingSession':False})
+    def test_countdown_milestones_and_deleted_once_across_restart(self):
+        discord = Mock(); discord.send.return_value = True
+        self.cycle(0); self.ret.flush_notices(discord, now=0)
+        self.assertIn('30 days', discord.send.call_args.args[0])
+        self.ret = self.make(); self.cycle(DAY); self.ret.flush_notices(discord, now=DAY)
+        self.assertEqual(discord.send.call_count, 1)
+        self.cycle(27*DAY); self.ret.flush_notices(discord, now=27*DAY)
+        self.assertIn('3 days', discord.send.call_args.args[0])
+        self.cycle(28*DAY); self.ret.flush_notices(discord, now=28*DAY)
+        self.assertEqual(discord.send.call_count, 2)
+        self.cycle(30*DAY); self.ret.flush_notices(discord, now=30*DAY)
+        self.assertIn('deleted', discord.send.call_args.args[0])
+        self.assertEqual(discord.send.call_count, 3)
+    def test_delivery_failure_retries_without_losing_notice(self):
+        self.cycle(0)
+        discord = Mock(); discord.send.return_value = False
+        self.ret.flush_notices(discord, now=0)
+        self.ret = self.make()
+        self.assertEqual(len(self.ret.data['notification_outbox']), 1)
+        discord.send.return_value = True
+        self.ret.flush_notices(discord, now=DAY)
+        self.assertEqual(self.ret.data['notification_outbox'], {})
+    def test_keep_cancels_queued_warning_and_new_countdown_rearms(self):
+        self.cycle(0); self.client.protected = {3}; self.cycle(DAY)
+        discord = Mock(); discord.send.return_value = True
+        self.ret.flush_notices(discord, now=DAY)
+        discord.send.assert_not_called()
+        self.client.protected = set(); self.cycle(2*DAY)
+        self.ret.flush_notices(discord, now=2*DAY)
+        self.assertEqual(discord.send.call_count, 1)
+    def test_preview_warning_does_not_promise_deletion(self):
+        self.ret = self.make('preview'); self.cycle(0)
+        discord = Mock(); discord.send.return_value = True
+        self.ret.flush_notices(discord, now=0)
+        self.assertIn('deletion disabled', discord.send.call_args.args[0])
+    def test_failed_snapshot_does_not_send_stale_warning(self):
+        self.cycle(0)
+        discord = Mock()
+        self.ret.flush_notices(discord, now=DAY, allow_warnings=False)
+        discord.send.assert_not_called()
     def test_completion_requires_real_page_counts(self):
         self.assertFalse(complete({'pages':0,'pagesRead':0}))
         self.assertFalse(complete({'pages':10,'pagesRead':9}))

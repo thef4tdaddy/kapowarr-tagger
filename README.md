@@ -302,7 +302,16 @@ progress. Unsupported API shapes fail closed. The implementation is based on
 Kavita 0.9.1.4 and the silasfelinus Kapowarr API; automated tests use isolated files
 and mocked APIs, not destructive live-library tests.
 
-Discord receives newly eligible previews and successful cleanup/restoration
-summaries; notifications are best-effort. Inspect the JSON log for authoritative
+Discord sends one notice when a countdown starts (30 days by default), another
+when three days or fewer remain, and a confirmation after deletion. Notices include
+the scheduled date; preview warnings explicitly say deletion is disabled. Completion
+restoration is also reported. Warning milestones and an outbox persist across
+restarts. Failed deliveries retry on later cleanup checks; cancelled countdown
+warnings are discarded. Each book is sent separately (at most 20 per check), so
+large batches are not silently truncated. Reset countdowns get new warnings;
+switching preview to write issues an appropriately labeled warning. Delivery is
+best-effort and does not delay deletion; downtime or Discord failures can prevent
+advance notice. An overdue countdown is not sent a misleading three-day warning.
+ Inspect the JSON log for authoritative
 outcomes, especially after an interrupted cycle. `CLEANUP_MODE: off` disables
 cleanup and restoration without affecting tagging or deleting the history log.
