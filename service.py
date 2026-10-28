@@ -16,6 +16,7 @@ import urllib.request
 from companion import KapowarrAPIError, api, desired_tags, read_tags, secret
 from writer import apply_one, sha256
 from discord_notify import DiscordNotifier
+from retention import run_retention, RetentionError
 
 LOG = logging.getLogger('tagger')
 STOP = threading.Event()
@@ -142,6 +143,9 @@ class Service:
             # Upgrade old outbox without falling back to a full-library request.
             self.state['pending_folders'] = sorted(set(self.state['pending_folders']) |
                 {str(Path(k).parent) for k in self.state['files']})
+
+    def stopping(self):
+        return STOP.is_set()
 
     def save(self):
         atomic_json(self.path, self.state)
@@ -342,11 +346,13 @@ def main():
                 volumes = [api('volumes/' + str(v['id'])) for v in api('volumes')]
                 report = service.cycle(volumes)
                 discord.update(report=json.loads((service.directory / 'report.json').read_text()))
+                if not STOP.is_set():
+                    run_retention(service, volumes, report, discord)
             except Exception as exc:
                 failed = True
-                discord.update(error=str(exc) if isinstance(exc, KapowarrAPIError) else type(exc).__name__)
+                discord.update(error=str(exc) if isinstance(exc, (KapowarrAPIError, RetentionError)) else type(exc).__name__)
                 LOG.error('Cycle failed (%s); retry scheduled',
-                          str(exc) if isinstance(exc, KapowarrAPIError) else type(exc).__name__)
+                          str(exc) if isinstance(exc, (KapowarrAPIError, RetentionError)) else type(exc).__name__)
             if os.environ.get('RUN_ONCE') == 'true':
                 break
             verified = bool(token) and WEBHOOK_SEEN.is_set()
@@ -359,6 +365,9 @@ def main():
             if delay is None:
                 interval = int(os.environ.get('RECONCILE_SECONDS', '3600'))
                 delay = max(60, interval) if interval > 0 else None
+                if os.environ.get('CLEANUP_MODE', 'off') != 'off':
+                    retention_wait = max(300, int(os.environ.get('CLEANUP_INTERVAL_SECONDS', '3600')))
+                    delay = min(delay, retention_wait) if delay is not None else retention_wait
                 if delay is not None:
                     LOG.info('Next reconciliation in %s seconds; webhook can trigger an earlier check', delay)
                     wait_for_work(service, delay, healthy=not failed)

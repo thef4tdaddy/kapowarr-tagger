@@ -222,3 +222,87 @@ Discord delivery is best-effort: failures are logged without credentials and nev
 stop tagging. Persistent attention/error notices retry on the next processing cycle;
 transient completion messages are not queued for later delivery. A stopped container
 cannot notify you; this is not a replacement for external uptime monitoring.
+
+
+## Optional 30-day cleanup and history restoration
+
+Cleanup is **off by default** and is independent of normal tagging. No current
+installation deletes files merely by pulling this update. Create a Kavita reading
+list named Keep, add books you want retained, and use the numeric ID from its URL:
+
+```yaml
+CLEANUP_MODE: "preview"
+KEEP_READING_LIST_ID: "12" # Replace with your actual /lists/NUMBER
+CLEANUP_DAYS: "30"
+CLEANUP_INTERVAL_SECONDS: "3600"
+CLEANUP_MAX_DELETIONS: "10"
+```
+
+Preview persists observations and writes `/state/retention-report.json`; it does
+not unmonitor/delete files or restore progress. The report includes candidate paths,
+first-observed completion times and counts. Unread, Keep-protected, absent,
+changed, or ambiguous books lose their countdown. The date means **first observed
+complete**, not an inferred historical finish date. Newly observed old reads get
+30 days too. Review preview before setting `CLEANUP_MODE: "write"`; write also
+requires the existing tagger `MODE: write`. Days cannot be less than 30. The
+countdown observed in preview carries over into write mode. Cleanup runs on the
+existing service loop, with a maximum idle interval of CLEANUP_INTERVAL_SECONDS;
+long processing cycles can delay it.
+
+### What gets protected
+
+The Keep list is mandatory: missing, inaccessible or malformed responses block
+cleanup. An intentionally empty accessible list protects no books. Membership is
+checked twice again immediately before a deletion. A reading list protects its
+current chapters, not future books in a series. A whole TPB/omnibus must be 100%
+read; we never remove individual pages. Only one-to-one Kavita chapter/file and
+Kapowarr issue/file mappings with confirmed CV volume and issue IDs are eligible.
+Files awaiting tagging/conversion, review, and multi-file/multi-issue or duplicate
+mappings are skipped. Keep your reader's progress synchronized to Kavita.
+
+### Permanent history log
+
+`/state/history/historical-log.json` stores schema/account scope, countdowns,
+book metadata and IDs, SHA-256 hashes, original progress, available series reading
+session history, restoration records, and deletion outcomes. It is atomically
+replaced, synced to disk and read back before deletion. History export/API/disk
+failures block deletion. No comic archive copies are retained. Back up this small
+state directory separately. The log contains private reading history.
+
+Immediately before deleting, the service exports history, unmonitors the mapped
+Kapowarr issue, verifies it is unmonitored, rechecks Keep/progress/file identity,
+and deletes via Kapowarr's file API. A cancelled/failed operation may leave the
+issue unmonitored; the log records cancellation rather than silently re-enabling
+future downloads. Ten deletions per check is the default limit. After deletion,
+a full scan of the affected Kavita library is requested, with a persistent retry
+queue. Accepted still means queued, not finished. A crash/timeout during deletion
+can leave `delete_requested`, meaning the outcome needs review rather than being
+reported as a confirmed deletion.
+
+### Reimport restoration
+
+An exact match of both CV volume+issue identity and file SHA-256 can restore
+completed status automatically in cleanup write mode. Kavita IDs are not used as
+cross-import identity. Existing partial reread progress is preserved. Same CV IDs
+with different archive bytes are protected for manual review, never guessed;
+retagging/repacking may change an archive hash. A reimport skips deletion that
+cycle and starts a fresh 30-day observation countdown afterward if complete.
+Preview reports restoration candidates without changing Kavita.
+
+Kavita 0.9.1.4 supports `Reader/mark-chapter-read` with
+`generateReadingSession: false`. Restoration therefore sets completion without
+inventing replacement reading sessions. Original session timestamps/durations,
+ratings, bookmarks, annotations and reading-list membership are **not replayed**
+into Kavita; the exported history remains in JSON. Kavita may trigger its usual
+external scrobbling when completion is restored. This is not a full account backup.
+
+The history scope includes a hash of the Kavita URL and API key. Changing either
+blocks reuse of the log pending review, to avoid restoring another account's
+progress. Unsupported API shapes fail closed. The implementation is based on
+Kavita 0.9.1.4 and the silasfelinus Kapowarr API; automated tests use isolated files
+and mocked APIs, not destructive live-library tests.
+
+Discord receives newly eligible previews and successful cleanup/restoration
+summaries; notifications are best-effort. Inspect the JSON log for authoritative
+outcomes, especially after an interrupted cycle. `CLEANUP_MODE: off` disables
+cleanup and restoration without affecting tagging or deleting the history log.

@@ -27,19 +27,19 @@ class KapowarrAPIError(RuntimeError):
     """Contains only allowlisted diagnostic information, never server text."""
 
 
-def api(route, payload=None):
+def api(route, payload=None, method=None):
     key = secret('KAPOWARR_API_KEY')
     url = os.environ.get('KAPOWARR_URL', 'http://kapowarr:5656').rstrip('/')
     request = urllib.request.Request(url + '/api/' + route + '?' +
                                      urllib.parse.urlencode({'api_key': key}),
                                      data=json.dumps(payload).encode() if payload is not None else None,
-                                     headers={'Content-Type': 'application/json'})
+                                     headers={'Content-Type': 'application/json'}, method=method)
     # Do not follow redirects carrying credentials to a different destination.
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None
-    safe_route = route if re.fullmatch(r"volumes(?:/[0-9]+)?|system/tasks", route) else "[redacted-route]"
-    method = 'POST' if payload is not None else 'GET'
+    safe_route = route if re.fullmatch(r"volumes(?:/[0-9]+)?|system/tasks|(?:issues|files)/[0-9]+", route) else "[redacted-route]"
+    method = method or ('POST' if payload is not None else 'GET')
     context = f'Kapowarr {method} /api/{safe_route}'
     try:
         with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response:
