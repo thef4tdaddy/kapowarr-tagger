@@ -315,3 +315,14 @@ advance notice. An overdue countdown is not sent a misleading three-day warning.
  Inspect the JSON log for authoritative
 outcomes, especially after an interrupted cycle. `CLEANUP_MODE: off` disables
 cleanup and restoration without affecting tagging or deleting the history log.
+
+
+### Discord appearance
+
+Notifications use native Discord embeds with status colors, concise headings,
+book names, processing counts, and timestamps. Cleanup warnings show the scheduled
+date and relative time plus a Keep reminder. Preview cards are purple and explicitly
+say deletion is disabled. Errors are red; successful work is green. No additional
+environment settings or bot installation is required. Mentions remain disabled,
+and existing deduplication/outbox behavior is unchanged. Payloads follow Discord's
+[embed format](https://docs.discord.com/developers/resources/message#embed-object).

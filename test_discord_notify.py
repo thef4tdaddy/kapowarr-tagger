@@ -2,7 +2,7 @@ import json
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
-from discord_notify import DiscordNotifier
+from discord_notify import DiscordNotifier, retention_embed, processing_embed, COLORS
 
 class DiscordTests(unittest.TestCase):
     def report(self, rows=(), scan='not_requested'):
@@ -50,6 +50,26 @@ class DiscordTests(unittest.TestCase):
             request=opener.return_value.open.call_args.args[0]
             payload=json.loads(request.data)
             self.assertEqual(payload['allowed_mentions'],{'parse':[]})
-            self.assertLessEqual(len(payload['content']),1900)
+            self.assertNotIn('content', payload)
+            self.assertLessEqual(len(payload['embeds'][0]['description']),2500)
+
+    def test_countdown_cards_have_date_keep_action_and_preview_label(self):
+        event = {'file': 'Green Lantern.cbz', 'status': 'three_days', 'mode': 'write', 'due': 1800000000}
+        card = retention_embed(event, 3)
+        self.assertEqual(card['color'], COLORS['warning'])
+        self.assertIn('<t:1800000000:f>', json.dumps(card))
+        self.assertIn('Keep', json.dumps(card))
+        event['mode'] = 'preview'
+        card = retention_embed(event, 3)
+        self.assertIn('Preview', card['title'])
+        self.assertIn('Deletion is disabled', json.dumps(card))
+    def test_processing_card_is_bounded_and_keeps_scan_caveat(self):
+        rows = [{'file':'/private/'+'x'*2000+'.cbz','status':'converted'} for _ in range(100)]
+        card = processing_embed(self.report(rows, 'accepted'), None, [])
+        self.assertNotIn('/private/', json.dumps(card))
+        self.assertIn('not confirmed', json.dumps(card))
+        self.assertLess(len(json.dumps(card)),6000)
+    def test_error_card_is_red(self):
+        self.assertEqual(processing_embed(None, 'HTTP 401', [])['color'], COLORS['error'])
 
 if __name__=='__main__': unittest.main()

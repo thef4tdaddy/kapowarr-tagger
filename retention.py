@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from companion import api, secret
+from discord_notify import retention_embed
 from writer import sha256
 
 LOG = logging.getLogger('tagger')
@@ -152,6 +153,7 @@ class Retention:
         now = time.time() if now is None else now
         queue = self.data.setdefault('notification_outbox', {})
         for event_id, event in list(queue.items())[:20]:
+            remaining = None
             if event['status'] in ('countdown_started', 'three_days'):
                 if not allow_warnings:
                     continue
@@ -171,7 +173,7 @@ class Retention:
             else:
                 message = 'Kapowarr Tagger: ' + event['status'] + '\n' + event['file'][:300]
             try:
-                if not discord.send(message):
+                if not discord.send(message, card=retention_embed(event, remaining)):
                     return
             except Exception as exc:
                 if hasattr(exc, 'close'):
