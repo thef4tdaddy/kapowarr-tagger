@@ -4,3 +4,5 @@
 !service.py
 !Dockerfile
 !cbr.py
+!discord_notify.py
+!retention.py
