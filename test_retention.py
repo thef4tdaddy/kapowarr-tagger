@@ -224,6 +224,14 @@ class RetentionTests(unittest.TestCase):
         discord = Mock()
         self.ret.flush_notices(discord, now=DAY, allow_warnings=False)
         discord.send.assert_not_called()
+    def test_fourteen_day_retention_and_zero_rejected(self):
+        self.ret = Retention(self.state, self.root, '/comics', self.client, 1,
+                             mode='write', days=14, kap=self.kap)
+        self.cycle(0)
+        self.assertEqual(self.cycle(13*DAY)['deleted'], 0)
+        self.assertEqual(self.cycle(14*DAY)['deleted'], 1)
+        with self.assertRaises(RetentionError):
+            Retention(self.state, self.root, '/comics', self.client, 1, days=0)
     def test_completion_requires_real_page_counts(self):
         self.assertFalse(complete({'pages':0,'pagesRead':0}))
         self.assertFalse(complete({'pages':10,'pagesRead':9}))

@@ -32,7 +32,7 @@ services:
       POLL_SECONDS: "300"
       CLEANUP_MODE: "off" # Start with preview; write enables permanent deletion/restoration
       KEEP_READING_LIST_ID: "" # Required Kavita Keep list ID
-      CLEANUP_DAYS: "30" # Minimum 30; begins when completion is observed
+      CLEANUP_DAYS: "30" # Minimum 1; begins when completion is observed
       CLEANUP_INTERVAL_SECONDS: "3600"
       CLEANUP_MAX_DELETIONS: "10" # Per cleanup check
       RECONCILE_SECONDS: "3600" # Catch manual changes even after webhook verification

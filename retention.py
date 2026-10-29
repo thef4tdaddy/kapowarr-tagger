@@ -127,8 +127,8 @@ def stamp(path):
 
 class Retention:
     def __init__(self, directory, root, kavita_root, client, keep_id, mode='preview', days=30, kap=api, stopped=lambda: False):
-        if mode not in ('preview', 'write') or days < 30 or keep_id <= 0:
-            raise RetentionError('Retention needs preview/write, Keep ID, and at least 30 days')
+        if mode not in ('preview', 'write') or days < 1 or keep_id <= 0:
+            raise RetentionError('Retention needs preview/write, Keep ID, and at least 1 day')
         self.directory, self.root = Path(directory), Path(root).resolve()
         self.kroot = Path(kavita_root)
         if not self.kroot.is_absolute() or self.directory.resolve().is_relative_to(self.root):

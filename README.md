@@ -244,7 +244,7 @@ first-observed completion times and counts. Unread, Keep-protected, absent,
 changed, or ambiguous books lose their countdown. The date means **first observed
 complete**, not an inferred historical finish date. Newly observed old reads get
 30 days too. Review preview before setting `CLEANUP_MODE: "write"`; write also
-requires the existing tagger `MODE: write`. Days cannot be less than 30. The
+requires the existing tagger `MODE: write`. Days must be a positive integer (minimum 1; default 30). The
 countdown observed in preview carries over into write mode. Cleanup runs on the
 existing service loop, with a maximum idle interval of CLEANUP_INTERVAL_SECONDS;
 long processing cycles can delay it.
